@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mdv-terminal"
+version = "0.1.0"
+description = "A terminal Markdown viewer with MarkItDown document conversion"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "textual>=1.0,<9",
+  "rich>=13.9,<15",
+  "markitdown[pdf,docx,pptx,xlsx,xls,outlook]>=0.1.2,<0.2",
+]
+
+[project.scripts]
+mdv = "mdv.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mdv"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
