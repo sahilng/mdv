@@ -50,6 +50,12 @@ to scroll; `g` / `G` jump to the start / end. Press `t` to toggle contents,
 stays responsive. Click HTTP or HTTPS links to open them in your default browser.
 Heading links navigate within the document; other links display their destination.
 
+Press `e` on a Markdown file to edit its source in the left pane with a live
+preview on the right. Use `Ctrl+S` to save and `Esc` to return to reading.
+Unsaved changes prevent leaving the editor; `Ctrl+D` discards them and returns
+to reading. Viewer shortcuts become normal text while editing. Converted
+documents (PDF, Office, HTML, etc.) are read-only.
+
 Piped input is treated as UTF-8 Markdown and rendered without a full-screen UI.
 Redirected output is plain Markdown, useful for saving converted documents.
 

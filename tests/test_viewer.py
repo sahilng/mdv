@@ -1,11 +1,68 @@
 import io
 from unittest.mock import AsyncMock, Mock
 
-from textual.widgets import Markdown, MarkdownViewer, Static
+from textual.widgets import Markdown, MarkdownViewer, Static, TextArea
 
 from mdv.app import Viewer
 from mdv.cli import main
 from mdv.document import load_document
+
+
+async def test_edit_preview_save_and_discard(tmp_path):
+    path = tmp_path / "edit.md"
+    path.write_text("# Original\n")
+    app = Viewer(path)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.press("e")
+        editor = app.query_one(TextArea)
+        viewer = app.query_one(MarkdownViewer)
+        assert editor.has_focus
+        assert editor.region.right <= viewer.region.x
+        assert not viewer.show_table_of_contents
+        editor.load_text("# Updated\n")
+        await pilot.pause()
+        assert viewer.document.table_of_contents[0][1] == "Updated"
+        assert path.read_text() == "# Original\n"
+        await pilot.press("escape")
+        assert app.editing
+        await pilot.press("ctrl+s", "escape")
+        assert path.read_text() == "# Updated\n"
+        assert not app.editing
+        assert viewer.show_table_of_contents
+        await pilot.press("e", "q", "r", "t", "e", "j", "k", "g")
+        assert app.editing
+        assert "qrtejkg" in editor.text
+        await pilot.press("ctrl+d")
+        assert not app.editing
+        assert path.read_text() == "# Updated\n"
+        assert viewer.document.table_of_contents[0][1] == "Updated"
+
+
+async def test_save_failure_keeps_edits(tmp_path, monkeypatch):
+    path = tmp_path / "edit.md"
+    path.write_text("Original")
+    app = Viewer(path)
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.press("e")
+        app.query_one(TextArea).load_text("Changed")
+        monkeypatch.setattr(type(path), "write_text", Mock(side_effect=OSError("Read-only")))
+        await pilot.press("ctrl+s", "escape")
+        assert app.dirty
+        assert app.query_one(TextArea).text == "Changed"
+        assert path.read_text() == "Original"
+
+
+async def test_converted_document_cannot_be_edited(tmp_path):
+    path = tmp_path / "example.html"
+    path.write_text("<h1>Hello</h1>")
+    app = Viewer(path)
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.press("e")
+        assert not app.editing
+        assert path.read_text() == "<h1>Hello</h1>"
 
 
 def test_markdown_and_html(tmp_path):
