@@ -36,7 +36,10 @@ def main(argv: list[str] | None = None) -> int:
                 from rich.console import Console
                 from rich.markdown import Markdown
 
-                Console().print(Markdown(content))
+                from .theme import PrintPalette, load_theme
+
+                palette = PrintPalette(load_theme())
+                Console(theme=palette.rich_theme()).print(Markdown(content, code_theme=palette))
         return 0
     except BrokenPipeError:
         return 0

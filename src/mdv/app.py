@@ -1,4 +1,5 @@
 import asyncio
+import sys
 import webbrowser
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -10,6 +11,7 @@ from textual.containers import Horizontal
 from textual.widgets import Footer, Header, Markdown, MarkdownViewer, Static, TextArea
 
 from .document import MARKDOWN_SUFFIXES, load_document
+from .theme import load_theme, save_theme
 
 
 class DocumentViewer(MarkdownViewer):
@@ -59,6 +61,8 @@ class Viewer(App):
 
     def __init__(self, path: Path, *, show_toc: bool = True):
         super().__init__()
+        self.theme = load_theme()
+        self.initial_theme = self.theme
         self.path = path
         self.show_toc = show_toc
         self.sub_title = path.name
@@ -76,6 +80,13 @@ class Viewer(App):
     def on_mount(self) -> None:
         self.query_one(MarkdownViewer).document.focus()
         self.action_reload()
+
+    def on_unmount(self) -> None:
+        if self.theme != self.initial_theme:
+            try:
+                save_theme(self.theme)
+            except OSError as error:
+                print(f"mdv: unable to save theme: {error}", file=sys.stderr)
 
     @work(exclusive=True)
     async def action_reload(self) -> None:
