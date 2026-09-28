@@ -104,7 +104,8 @@ class Viewer(App):
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action in {"save", "close_editor", "discard"}:
-            return self.editing
+            # Priority bindings must not intercept keys on the command palette.
+            return self.editing and self.screen is self.query_one(TextArea).screen
         if action in {"quit", "toc", "reload", "edit", "down", "up", "top", "bottom"}:
             return not self.editing
         return True

@@ -1,11 +1,42 @@
 import io
 from unittest.mock import AsyncMock, Mock
 
+import pytest
+from textual.command import CommandPalette
 from textual.widgets import Markdown, MarkdownViewer, Static, TextArea
 
 from mdv.app import Viewer
 from mdv.cli import main
 from mdv.document import load_document
+
+
+@pytest.mark.parametrize("dirty", [False, True])
+async def test_escape_palette_preserves_edit_mode(tmp_path, dirty):
+    path = tmp_path / "edit.md"
+    path.write_text("# Original\n")
+    app = Viewer(path)
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.press("e")
+        editor = app.query_one(TextArea)
+        viewer = app.query_one(MarkdownViewer)
+        document_screen = app.screen
+        if dirty:
+            editor.load_text("# Changed\n")
+        await pilot.press("ctrl+p")
+        assert isinstance(app.screen, CommandPalette)
+        await pilot.press("escape")
+        assert app.screen is document_screen
+        assert app.editing
+        assert document_screen.has_class("editing")
+        assert editor.has_focus
+        assert not viewer.show_table_of_contents
+        assert editor.text == ("# Changed\n" if dirty else "# Original\n")
+        assert app.dirty is dirty
+        await pilot.press("ctrl+d" if dirty else "escape")
+        assert not app.editing
+        assert not document_screen.has_class("editing")
+        assert viewer.show_table_of_contents
 
 
 async def test_edit_preview_save_and_discard(tmp_path):
