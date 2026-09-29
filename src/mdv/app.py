@@ -51,6 +51,7 @@ class Viewer(App):
         Binding("r", "reload", "Reload"),
         Binding("e", "edit", "Edit"),
         Binding("ctrl+s", "save", "Save", priority=True),
+        Binding("ctrl+q", "quit_editor", "Quit", priority=True),
         Binding("escape", "close_editor", "Read", priority=True),
         Binding("ctrl+d", "discard", "Discard edits", priority=True),
         Binding("j", "down", "Down", show=False),
@@ -110,7 +111,7 @@ class Viewer(App):
             self.notify(str(error), title="Unable to load document", severity="error", timeout=10)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        if action in {"save", "close_editor", "discard"}:
+        if action in {"save", "close_editor", "discard", "quit_editor"}:
             # Priority bindings must not intercept keys on the command palette.
             return self.editing and self.screen is self.query_one(TextArea).screen
         if action in {"quit", "toc", "reload", "edit", "down", "up", "top", "bottom"}:
@@ -141,7 +142,7 @@ class Viewer(App):
     def update_editor_status(self) -> None:
         marker = "Unsaved changes" if self.dirty else ("Saved" if self.path.exists() else "New file")
         self.query_one("#status", Static).update(
-            f"{self.path}  ·  {marker}  ·  Ctrl+S save · Esc read · Ctrl+D discard"
+            f"{self.path}  ·  {marker}  ·  Ctrl+S save · Ctrl+Q quit · Esc read · Ctrl+D discard"
         )
 
     async def on_text_area_changed(self, event: TextArea.Changed) -> None:
@@ -175,6 +176,9 @@ class Viewer(App):
         self.query_one(TextArea).load_text(self.content or "")
         await self.query_one(MarkdownViewer).document.update(self.content or "")
         self.action_close_editor()
+
+    def action_quit_editor(self) -> None:
+        self.action_quit()
 
     def action_quit(self) -> None:
         if self.dirty:

@@ -99,6 +99,31 @@ async def test_escape_palette_preserves_edit_mode(tmp_path, dirty):
         assert viewer.show_table_of_contents
 
 
+@pytest.mark.parametrize("dirty", [False, True])
+async def test_quit_directly_from_editor(tmp_path, monkeypatch, dirty):
+    path = tmp_path / "edit.md"
+    path.write_text("Original")
+    app = Viewer(path, start_editing=True)
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        exit_app = Mock()
+        monkeypatch.setattr(app, "exit", exit_app)
+        editor = app.query_one(TextArea)
+        if dirty:
+            editor.load_text("Changed")
+        await pilot.press("ctrl+p", "ctrl+q")
+        exit_app.assert_not_called()
+        await pilot.press("escape", "ctrl+q")
+        if dirty:
+            exit_app.assert_not_called()
+            assert editor.text == "Changed"
+            assert path.read_text() == "Original"
+            await pilot.press("ctrl+s", "ctrl+q")
+            assert path.read_text() == "Changed"
+        exit_app.assert_called_once_with()
+        assert app.editing
+
+
 async def test_edit_preview_save_and_discard(tmp_path):
     path = tmp_path / "edit.md"
     path.write_text("# Original\n")
