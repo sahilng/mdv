@@ -11,6 +11,7 @@ from textual.containers import Horizontal
 from textual.widgets import Footer, Header, Markdown, MarkdownViewer, Static, TextArea
 
 from .document import MARKDOWN_SUFFIXES, load_document
+from .preview import AlignedPreview
 from .theme import load_theme, save_theme
 
 
@@ -40,7 +41,9 @@ class Viewer(App):
     #panes { height: 1fr; }
     #editor { display: none; width: 1fr; height: 1fr; }
     Screen.editing #editor { display: block; }
-    Screen.editing MarkdownViewer { width: 1fr; }
+    AlignedPreview { display: none; }
+    Screen.editing AlignedPreview { display: block; }
+    Screen.editing MarkdownViewer { display: none; }
     Markdown { padding: 1 3; }
     MarkdownTableOfContents { width: 28; max-width: 35%; }
     #status { height: 1; padding: 0 1; background: $boost; color: $text-muted; }
@@ -70,18 +73,70 @@ class Viewer(App):
         self.sub_title = path.name
         self.editing = False
         self.content: str | None = None
+        self._syncing_scroll = False
+        self._refreshing_preview = False
 
     def compose(self) -> ComposeResult:
         yield Header()
         with Horizontal(id="panes"):
             yield TextArea(id="editor", show_line_numbers=True)
+            yield AlignedPreview()
             yield DocumentViewer("", show_table_of_contents=self.show_toc, open_links=False)
         yield Static(str(self.path), id="status", markup=False)
         yield Footer()
 
     def on_mount(self) -> None:
+        editor = self.query_one(TextArea)
+        preview = self.query_one(AlignedPreview)
+        self.watch(editor, "scroll_y", lambda: self.sync_scroll(editor, preview), init=False)
+        self.watch(preview, "scroll_y", lambda: self.sync_scroll(preview, editor), init=False)
+        self.watch(editor, "virtual_size", self.schedule_scroll_sync, init=False)
         self.query_one(MarkdownViewer).document.focus()
         self.action_reload()
+
+    def sync_scroll(self, source: TextArea | AlignedPreview, target: TextArea | AlignedPreview) -> None:
+        if not self.editing or self._syncing_scroll or self._refreshing_preview:
+            return
+        self._syncing_scroll = True
+        try:
+            target.scroll_to(y=source.scroll_y, animate=False, immediate=True)
+        finally:
+            self._syncing_scroll = False
+
+    def sync_preview(self) -> None:
+        if not self.editing:
+            self._refreshing_preview = False
+            return
+        editor = self.query_one(TextArea)
+        preview = self.query_one(AlignedPreview)
+        preview.reflow(editor)
+        self._refreshing_preview = False
+        self.sync_scroll(editor, preview)
+
+    def on_resize(self) -> None:
+        self.schedule_scroll_sync()
+
+    def schedule_scroll_sync(self) -> None:
+        if self.editing:
+            self._refreshing_preview = True
+            self.call_after_refresh(self.sync_preview)
+
+    async def on_aligned_preview_link_clicked(self, event: AlignedPreview.LinkClicked) -> None:
+        document = self.query_one(MarkdownViewer).document
+        if event.href.startswith("#"):
+            # Resolve anchors using the normal Markdown renderer's heading IDs.
+            from textual._slug import TrackedSlugs
+
+            slugs = TrackedSlugs()
+            for _, title, block_id in document.table_of_contents or []:
+                if slugs.slug(title) == event.href[1:]:
+                    block = document.query_one(f"#{block_id}")
+                    editor = self.query_one(TextArea)
+                    offset = editor.wrapped_document.location_to_offset((block.source_range[0], 0))
+                    self.query_one(AlignedPreview).scroll_to(y=offset.y, animate=False)
+                    break
+        else:
+            document.post_message(Markdown.LinkClicked(document, event.href))
 
     def on_unmount(self) -> None:
         if self.theme != self.initial_theme:
@@ -147,7 +202,12 @@ class Viewer(App):
 
     async def on_text_area_changed(self, event: TextArea.Changed) -> None:
         if self.editing:
-            await self.query_one(MarkdownViewer).document.update(event.text_area.text)
+            # Rendering changes scroll bounds; wait for layout before syncing.
+            self._refreshing_preview = True
+            try:
+                await self.query_one(MarkdownViewer).document.update(event.text_area.text)
+            finally:
+                self.call_after_refresh(self.sync_preview)
             self.update_editor_status()
 
     def action_save(self) -> None:

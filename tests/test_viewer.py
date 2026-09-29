@@ -6,6 +6,7 @@ from textual.command import CommandPalette
 from textual.widgets import Markdown, MarkdownViewer, Static, TextArea
 
 from mdv.app import Viewer
+from mdv.preview import AlignedPreview
 from mdv.cli import main
 from mdv.document import load_document
 
@@ -134,7 +135,7 @@ async def test_edit_preview_save_and_discard(tmp_path):
         editor = app.query_one(TextArea)
         viewer = app.query_one(MarkdownViewer)
         assert editor.has_focus
-        assert editor.region.right <= viewer.region.x
+        assert editor.region.right <= app.query_one(AlignedPreview).region.x
         assert not viewer.show_table_of_contents
         editor.load_text("# Updated\n")
         await pilot.pause()
@@ -168,6 +169,145 @@ async def test_save_failure_keeps_edits(tmp_path, monkeypatch):
         assert app.dirty
         assert app.query_one(TextArea).text == "Changed"
         assert path.read_text() == "Original"
+
+
+async def test_edit_scroll_sync(tmp_path):
+    path = tmp_path / "scroll.md"
+    path.write_text("\n\n".join(f"## Section {i}\n\n" + "Some text. " * 20 for i in range(40)))
+    app = Viewer(path, start_editing=True)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        editor = app.query_one(TextArea)
+        preview = app.query_one(AlignedPreview)
+        assert editor.max_scroll_y > 0
+        assert preview.max_scroll_y > 0
+        for source, target in ((editor, preview), (preview, editor)):
+            for fraction in (1, 0):
+                source.scroll_to(y=source.max_scroll_y * fraction, animate=False, immediate=True)
+                await pilot.pause()
+                assert target.scroll_y == pytest.approx(target.max_scroll_y * fraction, abs=1)
+                assert source.scroll_y == pytest.approx(source.max_scroll_y * fraction, abs=1)
+
+        editor.move_cursor(editor.document.end)
+        await pilot.pause()
+        assert preview.scroll_y == preview.max_scroll_y
+        await pilot.press("enter", "x")
+        await pilot.pause()
+        assert preview.scroll_y == pytest.approx(preview.max_scroll_y, abs=1)
+        await pilot.resize_terminal(80, 24)
+        await pilot.pause()
+        assert preview.scroll_y / preview.max_scroll_y == pytest.approx(
+            editor.scroll_y / editor.max_scroll_y, abs=0.01
+        )
+        await pilot.press("ctrl+s", "escape")
+        previous_editor_y = editor.scroll_y
+        preview.scroll_to(y=0, animate=False, immediate=True)
+        await pilot.pause()
+        assert editor.scroll_y == previous_editor_y
+
+
+async def test_preview_rows_align_with_source(tmp_path):
+    source = (
+        "# First\n\n\n"
+        "## Middle\n\n"
+        + " ".join(f"word{i}" for i in range(100))
+        + "\ncontinued **bold** text\n\n"
+        "> Quote\n>\n> Another paragraph\n\n"
+        "- First item\n- Second item\n\n"
+        "```python\nprint('hello')\n```\n\n"
+        "| A | B |\n| - | - |\n| 1 | 2 |\n\n"
+        "## Last\n\n" + "Tail paragraph\n\n" * 30
+    )
+    path = tmp_path / "blocks.md"
+    path.write_text(source)
+    app = Viewer(path, start_editing=True)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        editor = app.query_one(TextArea)
+        preview = app.query_one(AlignedPreview)
+
+        async def check_alignment():
+            assert preview.content_region.y == editor.content_region.y
+            assert len(preview.rows) == editor.wrapped_document.height
+            assert preview.max_scroll_y == editor.max_scroll_y
+            # Match actual content at every wrapped row, not just block starts.
+            for line_index, source_line in enumerate(editor.document.lines):
+                bounds = [0, *editor.wrapped_document.get_offsets(line_index), len(source_line)]
+                first_row = editor.wrapped_document.location_to_offset((line_index, 0)).y
+                for section, (start, end) in enumerate(zip(bounds, bounds[1:])):
+                    rendered = preview.rows[first_row + section].plain
+                    if source_line.startswith("word"):
+                        assert rendered == source_line[start:end]
+                    elif not source_line or source_line.startswith("```"):
+                        assert rendered == ""
+                for marker in ("First", "Middle", "continued", "Another", "Second", "print", "Last"):
+                    if marker in source_line:
+                        offset = editor.wrapped_document.location_to_offset((line_index, source_line.index(marker)))
+                        assert marker in preview.rows[offset.y].plain
+            for source_pane, target in ((editor, preview), (preview, editor)):
+                for fraction in (0, 0.5, 1):
+                    source_pane.scroll_to(y=int(source_pane.max_scroll_y * fraction), animate=False, immediate=True)
+                    await pilot.pause()
+                    assert source_pane.scroll_y == target.scroll_y
+
+        await check_alignment()
+        await pilot.resize_terminal(61, 24)
+        await pilot.pause()
+        await check_alignment()
+        editor.load_text("Intro\n\n" + editor.text)
+        await pilot.pause()
+        await check_alignment()
+        await pilot.press("ctrl+s", "escape")
+        assert not preview.display
+        assert app.query_one(MarkdownViewer).display
+        assert path.read_text() == "Intro\n\n" + source
+
+
+async def test_edit_scroll_sync_short_document(tmp_path):
+    path = tmp_path / "short.md"
+    path.write_text("# Short\n")
+    app = Viewer(path, start_editing=True)
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        await pilot.press("pagedown", "pageup")
+        assert app.query_one(TextArea).scroll_y == 0
+        assert app.query_one(AlignedPreview).scroll_y == 0
+
+
+async def test_aligned_preview_links_and_empty_edits(tmp_path, monkeypatch):
+    path = tmp_path / "links.md"
+    path.write_text("[Website](https://example.com)\n\n" + "Paragraph\n\n" * 30 + "## Target\n\n" + "Tail\n\n" * 30)
+    browser = Mock(return_value=True)
+    monkeypatch.setattr("mdv.app.webbrowser.open", browser)
+    app = Viewer(path, start_editing=True)
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        editor = app.query_one(TextArea)
+        preview = app.query_one(AlignedPreview)
+        await pilot.click(preview, offset=(
+            preview.content_region.x - preview.region.x + 1,
+            preview.content_region.y - preview.region.y,
+        ))
+        await pilot.pause()
+        browser.assert_called_once_with("https://example.com", new=2)
+        preview.action_link("#target")
+        await pilot.pause()
+        target_y = editor.wrapped_document.location_to_offset((62, 0)).y
+        assert editor.scroll_y == preview.scroll_y == target_y
+        editor.load_text("")
+        await pilot.pause()
+        assert preview.virtual_size.height == 1
+        assert preview.rows[0].plain == ""
+        assert editor.scroll_y == preview.scroll_y == 0
+        await pilot.press("ctrl+d")
+        assert not app.editing
+        await pilot.press("e")
+        await pilot.pause()
+        assert preview.rows[0].plain == "Website"
 
 
 async def test_converted_document_cannot_be_edited(tmp_path):

@@ -9,7 +9,7 @@ description = "A terminal Markdown viewer with MarkItDown document conversion"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-  "textual>=1.0,<9",
+  "textual>=8.2.8,<9",
   "rich>=13.9,<15",
   "markitdown[pdf,docx,pptx,xlsx,xls,outlook]>=0.1.2,<0.2",
 ]

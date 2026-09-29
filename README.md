@@ -55,7 +55,10 @@ Heading links navigate within the document; other links display their destinatio
 
 Press `e` on a Markdown file to edit its source in the left pane with a live
 preview on the right. Use `Ctrl+S` to save, `Ctrl+Q` to quit directly, and `Esc`
-to return to reading.
+to return to reading. The edit preview preserves source line breaks, blank lines,
+and the editor's wrapping, so matching content stays on the same screen rows.
+Formatting-only lines (such as code fences) keep their space, and scrolling either
+pane moves both together. Read mode uses the usual Markdown layout.
 Unsaved changes prevent leaving the editor; `Ctrl+D` discards them and returns
 to reading. Viewer shortcuts become normal text while editing. Converted
 documents (PDF, Office, HTML, etc.) are read-only.
