@@ -230,33 +230,28 @@ async def test_preview_rows_align_with_source(tmp_path):
 
         async def check_alignment():
             assert preview.content_region.y == editor.content_region.y
-            assert len(preview.rows) == editor.wrapped_document.height
-            assert preview.max_scroll_y == editor.max_scroll_y
-            # Match actual content at every wrapped row, not just block starts.
+            # Native block margins and table borders consume rendered rows;
+            # scrolling follows source positions rather than equal row counts.
             for line_index, source_line in enumerate(editor.document.lines):
-                bounds = [0, *editor.wrapped_document.get_offsets(line_index), len(source_line)]
-                first_row = editor.wrapped_document.location_to_offset((line_index, 0)).y
-                for section, (start, end) in enumerate(zip(bounds, bounds[1:])):
-                    rendered = preview.rows[first_row + section].plain
-                    if source_line.startswith("word"):
-                        assert rendered == source_line[start:end]
-                    elif not source_line or source_line.startswith("```"):
-                        assert rendered == ""
                 for marker in ("First", "Middle", "continued", "Another", "Second", "print", "Last"):
                     if marker in source_line:
-                        offset = editor.wrapped_document.location_to_offset((line_index, source_line.index(marker)))
-                        assert marker in preview.rows[offset.y].plain
+                        offset = preview.projection.offset((line_index, source_line.index(marker)))
+                        assert marker in preview.rows[offset.y].text
+            continuation = editor.document.lines.index("continued **bold** text")
+            assert preview.projection.offset((continuation, 0)).y > preview.projection.offset((continuation - 1, 0)).y
             for source_pane, target in ((editor, preview), (preview, editor)):
-                for fraction in (0, 0.5, 1):
+                for fraction in (0, 1):
                     source_pane.scroll_to(y=int(source_pane.max_scroll_y * fraction), animate=False, immediate=True)
                     await pilot.pause()
-                    assert source_pane.scroll_y == target.scroll_y
+                    assert target.scroll_y == target.max_scroll_y * fraction
 
         await check_alignment()
         await pilot.resize_terminal(61, 24)
         await pilot.pause()
         await check_alignment()
         editor.load_text("Intro\n\n" + editor.text)
+        await pilot.pause()
+        await app.workers.wait_for_complete()
         await pilot.pause()
         await check_alignment()
         await pilot.press("ctrl+s", "escape")
@@ -288,26 +283,27 @@ async def test_aligned_preview_links_and_empty_edits(tmp_path, monkeypatch):
         await pilot.pause()
         editor = app.query_one(TextArea)
         preview = app.query_one(AlignedPreview)
+        link = preview.projection.offset((0, 1))
         await pilot.click(preview, offset=(
-            preview.content_region.x - preview.region.x + 1,
-            preview.content_region.y - preview.region.y,
+            preview.content_region.x - preview.region.x + link.x,
+            preview.content_region.y - preview.region.y + link.y,
         ))
         await pilot.pause()
         browser.assert_called_once_with("https://example.com", new=2)
         preview.action_link("#target")
         await pilot.pause()
         target_y = editor.wrapped_document.location_to_offset((62, 0)).y
-        assert editor.scroll_y == preview.scroll_y == target_y
+        assert editor.scroll_y == target_y
+        assert preview.scroll_y == preview.projection.offset((62, 0)).y
         editor.load_text("")
         await pilot.pause()
-        assert preview.virtual_size.height == 1
-        assert preview.rows[0].plain == ""
+        assert all(not row.text.strip() for row in preview.rows)
         assert editor.scroll_y == preview.scroll_y == 0
         await pilot.press("ctrl+d")
         assert not app.editing
         await pilot.press("e")
         await pilot.pause()
-        assert preview.rows[0].plain == "Website"
+        assert "Website" in "".join(row.text for row in preview.rows)
 
 
 async def test_converted_document_cannot_be_edited(tmp_path):

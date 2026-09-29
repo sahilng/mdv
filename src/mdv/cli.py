@@ -12,8 +12,10 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--print", dest="print_only", action="store_true", help="render without opening the interactive viewer")
     mode.add_argument("--raw", action="store_true", help="output Markdown source (including converted documents)")
     mode.add_argument("--edit", action="store_true", help="open the Markdown editor, creating a new file on save")
+    mode.add_argument("--live-edit", action="store_true", help="edit in one pane with live Markdown styling and gray syntax")
     parser.add_argument("--no-toc", action="store_true", help="start with the table of contents hidden")
     args = parser.parse_args(argv)
+    args.edit = args.edit or args.live_edit
     if args.edit and args.file in (None, "-"):
         parser.error("--edit requires a Markdown file path")
     if args.file is None and sys.stdin.isatty():
@@ -40,7 +42,8 @@ def main(argv: list[str] | None = None) -> int:
         if interactive:
             from .app import Viewer
 
-            Viewer(path, show_toc=not args.no_toc, start_editing=args.edit).run()
+            Viewer(path, show_toc=not args.no_toc, start_editing=args.edit,
+                   **({"live_edit": True} if args.live_edit else {})).run()
         else:
             content = load_document(path) if path else sys.stdin.read()
             if args.raw or not sys.stdout.isatty():

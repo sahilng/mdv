@@ -42,6 +42,7 @@ mdv README.md --print         # render in the current terminal
 md README.md                 # shortcut for mdv --print
 mdv README.md --edit          # start in the editor
 mde notes.md                 # edit an existing or new Markdown file
+mdv notes.md --live-edit     # single-pane editor with live Markdown styling
 mdv report.pdf --raw > report.md
 cat README.md | mdv           # render piped Markdown
 ```
@@ -55,10 +56,17 @@ Heading links navigate within the document; other links display their destinatio
 
 Press `e` on a Markdown file to edit its source in the left pane with a live
 preview on the right. Use `Ctrl+S` to save, `Ctrl+Q` to quit directly, and `Esc`
-to return to reading. The edit preview preserves source line breaks, blank lines,
-and the editor's wrapping, so matching content stays on the same screen rows.
-Formatting-only lines (such as code fences) keep their space, and scrolling either
-pane moves both together. Read mode uses the usual Markdown layout.
+to return to reading. The preview uses the same headings, tables, code highlighting,
+spacing, and theme as read mode, while preserving source line breaks. Scrolling
+either pane follows the corresponding source position in the other pane.
+
+Press `Ctrl+L` while editing to toggle a single-pane live editor, or start there
+with `--live-edit`. The whole document stays rendered, including the text being
+edited, with Markdown syntax visible in gray throughout. Arrow keys, selection,
+undo, and redo work across the entire document; `Ctrl+Home` / `Ctrl+End` jump to
+the start / end. Long code lines scroll horizontally. Both edit modes follow the
+selected read-view theme, including changes made while editing.
+
 Unsaved changes prevent leaving the editor; `Ctrl+D` discards them and returns
 to reading. Viewer shortcuts become normal text while editing. Converted
 documents (PDF, Office, HTML, etc.) are read-only.

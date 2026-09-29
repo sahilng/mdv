@@ -1,0 +1,179 @@
+from unittest.mock import Mock
+
+import pytest
+from rich.color import Color
+from textual.widgets import MarkdownViewer, TextArea
+
+from mdv.app import Viewer
+from mdv.cli import main
+from mdv.editor import MarkdownEditor
+from mdv.preview import AlignedPreview
+from mdv.rendered import RenderMarkdown, SOURCE
+
+
+SOURCE_TEXT = (
+    "# Heading\n\n**bold** and *italic* and `inline`\ncontinued line\n\n"
+    "| A | B |\n| - | - |\n| 1 | 2 |\n\n"
+    "```python\nx = 1\n```\n\n[link](https://example.com)\n"
+)
+
+
+def source_style(projection, index):
+    for strip in projection.rows:
+        for segment in strip:
+            if segment.style and segment.style.meta.get(SOURCE) == index:
+                return segment.style
+    raise AssertionError(f"No rendered source character at {index}")
+
+
+async def settle(app, pilot):
+    await app.workers.wait_for_complete()
+    await pilot.pause()
+    await app.workers.wait_for_complete()
+    await pilot.pause()
+
+
+async def test_live_continuous_navigation_edit_toggle_undo_and_save(tmp_path):
+    path = tmp_path / "live.md"
+    path.write_text(SOURCE_TEXT)
+    app = Viewer(path, live_edit=True)
+    async with app.run_test(size=(80, 25)) as pilot:
+        await settle(app, pilot)
+        editor = app.query_one(MarkdownEditor)
+        assert editor.has_focus
+        assert not app.query_one(AlignedPreview).display
+        assert len(app.query(TextArea)) == 1
+        assert editor.text == SOURCE_TEXT
+        projection = editor.projection
+        for index, char in enumerate(SOURCE_TEXT):
+            if not char.isspace():
+                assert index in projection.positions, (index, char)
+        for marker in ("#", "**", "```", "https", "| -"):
+            assert source_style(projection, SOURCE_TEXT.index(marker)).color == Color.parse("#808080")
+        assert source_style(projection, SOURCE_TEXT.index("bold")).bold
+        assert source_style(projection, SOURCE_TEXT.index("italic")).italic
+        assert projection.offset((3, 0)).y == projection.offset((2, 0)).y
+        await pilot.press(*(["down"] * (len(projection.rows) + 5)))
+        assert editor.cursor_location == editor.document.end
+        await pilot.press("T", "a", "i", "l")
+        await settle(app, pilot)
+        assert editor.text == SOURCE_TEXT + "Tail"
+        assert "Tail" in "\n".join(row.text for row in editor.projection.rows)
+        await pilot.press("ctrl+l")
+        await settle(app, pilot)
+        assert app.query_one(AlignedPreview).display
+        await pilot.press("ctrl+l")
+        await settle(app, pilot)
+        assert editor.cursor_location == editor.document.end
+        await pilot.press("ctrl+z")
+        await settle(app, pilot)
+        assert editor.text == SOURCE_TEXT
+        await pilot.press("ctrl+y", "ctrl+s", "escape")
+        assert path.read_text() == SOURCE_TEXT + "Tail"
+        assert not app.editing
+
+
+async def test_live_new_file_discard(tmp_path):
+    path = tmp_path / "new.md"
+    app = Viewer(path, live_edit=True)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        await pilot.press("x", "escape")
+        assert app.editing
+        await pilot.press("ctrl+d")
+        assert not app.editing
+        assert not path.exists()
+
+
+@pytest.mark.parametrize("theme", ["textual-dark", "textual-light", "nord"])
+async def test_edit_rendering_uses_read_styles_and_theme(tmp_path, monkeypatch, theme):
+    from textual.widgets._markdown import MarkdownH1, MarkdownParagraph, MarkdownFence
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr("mdv.app.save_theme", lambda _: None)
+    path = tmp_path / "theme.md"
+    path.write_text(SOURCE_TEXT)
+    app = Viewer(path, show_toc=False)
+    app.theme = theme
+    async with app.run_test(size=(90, 35)) as pilot:
+        await settle(app, pilot)
+        read = app.query_one(MarkdownViewer).document
+        expected = {}
+        for cls, word in ((MarkdownH1, "Heading"), (MarkdownParagraph, "bold"), (MarkdownFence, "x")):
+            block = read.query_one(cls)
+            # Include children of code blocks, since their Label paints the code.
+            segments = [segment for widget in [block, *block.walk_children()]
+                        for row in widget.render_lines(widget.region.size.region) for segment in row]
+            expected[word] = next(segment.style for segment in segments if word in segment.text)
+        await pilot.press("e")
+        await settle(app, pilot)
+        for live in (False, True):
+            if live:
+                await pilot.press("ctrl+l")
+                await settle(app, pilot)
+            projection = (app.query_one(MarkdownEditor).projection if live
+                          else app.query_one(AlignedPreview).projection)
+            for word, style in expected.items():
+                actual = source_style(projection, SOURCE_TEXT.index(word))
+                assert (actual.color, actual.bgcolor, actual.bold, actual.italic) == (
+                    style.color, style.bgcolor, style.bold, style.italic
+                ), (theme, live, word)
+            if not live:
+                assert projection.offset((3, 0)).y > projection.offset((2, 0)).y
+        app.theme = "dracula"
+        await settle(app, pilot)
+        renderer = app.query_one(RenderMarkdown)
+        assert source_style(app.query_one(MarkdownEditor).projection, 2).color == renderer.query_one(MarkdownH1).rich_style.color
+
+
+async def test_live_mouse_selection_wrap_resize_and_up(tmp_path):
+    path = tmp_path / "wrap.md"
+    path.write_text("# Title\n\n" + "你好 **world** " * 40 + "\n\nLast\n")
+    app = Viewer(path, live_edit=True)
+    async with app.run_test(size=(64, 18)) as pilot:
+        await settle(app, pilot)
+        editor = app.query_one(MarkdownEditor)
+        point = editor.projection.offset((2, 5))
+        await pilot.click(editor, offset=(point.x, point.y))
+        assert editor.cursor_location == (2, 5)
+        await pilot.press("shift+right", "shift+right", "X")
+        await settle(app, pilot)
+        assert editor.text.splitlines()[2].startswith("你好 **Xrld")
+        await pilot.press("ctrl+end")
+        assert editor.cursor_location == editor.document.end
+        await pilot.press(*(["up"] * 100))
+        assert editor.cursor_location == (0, 0)
+        await pilot.resize_terminal(45, 15)
+        await settle(app, pilot)
+        assert app.query_one(RenderMarkdown).region.width == editor.scrollable_content_region.width
+        assert max(strip.cell_length for strip in editor.projection.rows) <= editor.scrollable_content_region.width
+
+
+def test_live_cli(tmp_path, monkeypatch):
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    viewer = Mock()
+    monkeypatch.setattr("mdv.app.Viewer", viewer)
+    path = tmp_path / "new.md"
+    assert main(["--live-edit", str(path)]) == 0
+    viewer.assert_called_once_with(path, show_toc=True, start_editing=True, live_edit=True)
+
+
+async def test_live_long_code_and_incomplete_markdown(tmp_path):
+    path = tmp_path / "code.md"
+    text = "```python\nvalue = '" + "x" * 130 + "'\n```\n"
+    path.write_text(text)
+    app = Viewer(path, live_edit=True)
+    async with app.run_test(size=(65, 20)) as pilot:
+        await settle(app, pilot)
+        editor = app.query_one(MarkdownEditor)
+        editor.move_cursor((1, 120))
+        assert editor.scroll_target_x > 0
+        assert editor.projection.index((1, 120)) in editor.projection.positions
+        await pilot.press("Y")
+        await settle(app, pilot)
+        assert editor.document.lines[1][120] == "Y"
+        # An unclosed fence still renders and every code character remains editable.
+        editor.load_text("```python\n" + "z" * 100)
+        await settle(app, pilot)
+        editor.move_cursor(editor.document.end)
+        assert editor.projection.index(editor.document.end) in editor.projection.positions
