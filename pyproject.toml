@@ -16,6 +16,8 @@ dependencies = [
 
 [project.scripts]
 mdv = "mdv.cli:main"
+md = "mdv.cli:print_main"
+mde = "mdv.cli:edit_main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.24"]

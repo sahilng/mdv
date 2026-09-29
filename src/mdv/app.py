@@ -59,12 +59,13 @@ class Viewer(App):
         Binding("G", "bottom", "Bottom", show=False),
     ]
 
-    def __init__(self, path: Path, *, show_toc: bool = True):
+    def __init__(self, path: Path, *, show_toc: bool = True, start_editing: bool = False):
         super().__init__()
         self.theme = load_theme()
         self.initial_theme = self.theme
         self.path = path
         self.show_toc = show_toc
+        self.start_editing = start_editing
         self.sub_title = path.name
         self.editing = False
         self.content: str | None = None
@@ -94,10 +95,16 @@ class Viewer(App):
         status = self.query_one("#status", Static)
         status.update(f"Loading {self.path.name}…")
         try:
-            content = await asyncio.to_thread(load_document, self.path)
+            if self.start_editing and not self.path.exists() and self.path.suffix.lower() in MARKDOWN_SUFFIXES:
+                content = ""
+            else:
+                content = await asyncio.to_thread(load_document, self.path)
             self.content = content
             await viewer.document.update(content)
             status.update(f"{self.path}  ·  {len(content.splitlines()):,} lines")
+            if self.start_editing:
+                self.start_editing = False
+                self.action_edit()
         except Exception as error:
             status.update(f"Unable to load: {error}")
             self.notify(str(error), title="Unable to load document", severity="error", timeout=10)
@@ -132,7 +139,7 @@ class Viewer(App):
         self.refresh_bindings()
 
     def update_editor_status(self) -> None:
-        marker = "Unsaved changes" if self.dirty else "Saved"
+        marker = "Unsaved changes" if self.dirty else ("Saved" if self.path.exists() else "New file")
         self.query_one("#status", Static).update(
             f"{self.path}  ·  {marker}  ·  Ctrl+S save · Esc read · Ctrl+D discard"
         )

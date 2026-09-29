@@ -1,0 +1,4 @@
+- [x] add --edit to jump into edit
+- [x] add md as shortcut for mdv --print and mde as shortcut for mdv --edit
+- [x] allow creating new .md file with mdv --edit with arg as .md file that doesn't exist yet
+- [x] don't open mdv if file doesn't exist yet, show error without opening (and add hint to use mde if want to write new file)

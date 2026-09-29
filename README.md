@@ -39,6 +39,9 @@ mdv report.pdf
 mdv slides.pptx
 mdv document.docx --no-toc
 mdv README.md --print         # render in the current terminal
+md README.md                 # shortcut for mdv --print
+mdv README.md --edit          # start in the editor
+mde notes.md                 # edit an existing or new Markdown file
 mdv report.pdf --raw > report.md
 cat README.md | mdv           # render piped Markdown
 ```
@@ -55,6 +58,12 @@ preview on the right. Use `Ctrl+S` to save and `Esc` to return to reading.
 Unsaved changes prevent leaving the editor; `Ctrl+D` discards them and returns
 to reading. Viewer shortcuts become normal text while editing. Converted
 documents (PDF, Office, HTML, etc.) are read-only.
+
+Use `--edit` or `mde` to start editing immediately. A new Markdown file is
+created on `Ctrl+S`; its parent directory must already exist. Editing requires
+an interactive terminal. Opening a missing file without `--edit` reports an
+error before starting the viewer. After updating, rerun
+`python -m pip install -e .` to install the `md` and `mde` shortcuts.
 
 Piped input is treated as UTF-8 Markdown and rendered without a full-screen UI.
 Redirected output is plain Markdown, useful for saving converted documents.

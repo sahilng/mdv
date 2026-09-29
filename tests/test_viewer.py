@@ -10,6 +10,66 @@ from mdv.cli import main
 from mdv.document import load_document
 
 
+@pytest.mark.parametrize("existing", [False, True])
+async def test_start_in_editor_and_save(tmp_path, existing):
+    path = tmp_path / "notes.md"
+    if existing:
+        path.write_text("# Existing\n")
+    app = Viewer(path, start_editing=True)
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        editor = app.query_one(TextArea)
+        assert app.editing
+        assert editor.has_focus
+        assert editor.text == ("# Existing\n" if existing else "")
+        assert path.exists() is existing
+        editor.load_text("# Saved\n")
+        await pilot.press("ctrl+s", "escape")
+        assert path.read_text() == "# Saved\n"
+        assert not app.editing
+
+
+def test_cli_interactive_validation(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    viewer = Mock()
+    monkeypatch.setattr("mdv.app.Viewer", viewer)
+    path = tmp_path / "new.md"
+    assert main([str(path)]) == 1
+    assert "mde" in capsys.readouterr().err
+    viewer.assert_not_called()
+    assert main(["--edit", str(path)]) == 0
+    viewer.assert_called_once_with(path, show_toc=True, start_editing=True)
+    viewer.return_value.run.assert_called_once()
+    assert not path.exists()
+    viewer.reset_mock()
+    for invalid in (tmp_path, tmp_path / "new.pdf", tmp_path / "missing" / "new.md"):
+        assert main(["--edit", str(invalid)]) == 1
+    viewer.assert_not_called()
+
+
+def test_edit_requires_path_and_terminal(tmp_path, monkeypatch, capsys):
+    for args in (["--edit"], ["--edit", "-"], ["--edit", "--print", "file.md"]):
+        with pytest.raises(SystemExit) as error:
+            main(args)
+        assert error.value.code == 2
+    capsys.readouterr()
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    assert main(["--edit", str(tmp_path / "new.md")]) == 1
+    assert "interactive terminal" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("entry, flag", [("print_main", "--print"), ("edit_main", "--edit")])
+def test_shortcuts(entry, flag, monkeypatch):
+    from mdv import cli
+
+    main_mock = Mock(return_value=0)
+    monkeypatch.setattr(cli, "main", main_mock)
+    monkeypatch.setattr("sys.argv", ["shortcut", "notes.md", "--no-toc"])
+    assert getattr(cli, entry)() == 0
+    main_mock.assert_called_once_with([flag, "notes.md", "--no-toc"])
+
+
 @pytest.mark.parametrize("dirty", [False, True])
 async def test_escape_palette_preserves_edit_mode(tmp_path, dirty):
     path = tmp_path / "edit.md"
