@@ -1,6 +1,7 @@
 """Source mapping and the split-view rendered Markdown pane."""
 
 from difflib import SequenceMatcher
+from functools import lru_cache
 
 from markdown_it import MarkdownIt
 from markdown_it.rules_inline import image, link
@@ -71,6 +72,12 @@ def source_columns(source: str, rendered: str, env: dict | None = None) -> list[
     columns[0] = 0
     columns[-1] = len(rendered)
     return columns
+
+
+@lru_cache(maxsize=2048)
+def cached_source_columns(source: str, rendered: str) -> tuple[int, ...]:
+    """Reuse inline mappings independently of their document position."""
+    return tuple(source_columns(source, rendered))
 
 
 class AlignedPreview(ScrollView, can_focus=True):

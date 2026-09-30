@@ -5,7 +5,7 @@ survives its renderer and lets the editor navigate the resulting terminal cells.
 """
 
 import asyncio
-from functools import lru_cache
+from functools import cached_property, lru_cache
 from bisect import bisect_right
 from dataclasses import dataclass, field
 from collections.abc import Sequence
@@ -22,7 +22,7 @@ from textual.widgets._markdown import MarkdownBlock, MarkdownListItem, MarkdownF
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
 
-from .preview import source_columns
+from .preview import cached_source_columns
 from .html import HTMLMarkdownParser
 
 
@@ -38,7 +38,7 @@ def located(content: Content, source: str, start: int, *, controls: bool, breaks
 def _located(plain, original_spans, source, start, controls, breaks) -> Content:
     """Project the read renderer's inline styles onto source, or annotate output."""
     content = Content(plain, spans=original_spans)
-    columns = source_columns(source, content.plain)
+    columns = cached_source_columns(source, content.plain)
     if controls:
         spans = []
         text = source if breaks else source.replace("\n", " ")
@@ -106,8 +106,11 @@ class RenderMarkdown(Markdown):
 
     async def update(self, markdown: str) -> None:
         """Keep unchanged mounted blocks when updating an editing document."""
-        parser = self._parser_factory() if self._parser_factory else MarkdownIt("gfm-like")
         async with self.lock:
+            parser = getattr(self, "_edit_parser", None)
+            if parser is None:
+                parser = self._edit_parser = (self._parser_factory() if self._parser_factory
+                                              else MarkdownIt("gfm-like"))
             env = {}
             tokens = await asyncio.to_thread(parser.parse, markdown, env)
             old = list(self.children)
@@ -384,8 +387,31 @@ class RenderMarkdown(Markdown):
                 else:
                     yield token
 
+        def blocks():
+            # Reuse whole top-level token groups before Textual constructs any
+            # widgets or inline content. Parsing the full source still resolves
+            # references and block boundaries correctly after structural edits.
+            group = []
+            depth = 0
+            for token in layout_tokens():
+                group.append(token)
+                depth += token.nesting
+                if depth:
+                    continue
+                opening = group[0]
+                kind = opening.tag if opening.type == "heading_open" else opening.type
+                cls = self.get_block_class(kind) if kind in self.BLOCKS else None
+                reused = (self._reuse_block(cls, *opening.map)
+                          if cls is not None and opening.map else None)
+                if reused is not None:
+                    yield reused, True
+                else:
+                    for block in super(RenderMarkdown, self)._parse_markdown(group):
+                        yield block, False
+                group = []
+
         consumed = 0
-        for block in super()._parse_markdown(layout_tokens()):
+        for block, reused in blocks():
             first, last = block.source_range
             if self.controls and first > consumed:
                 # Whitespace and reference definitions are editable too.
@@ -394,11 +420,8 @@ class RenderMarkdown(Markdown):
                 spacer = self.syntax_block("", offsets[consumed], consumed, first)
                 spacer.styles.height = first - consumed - 1
                 yield spacer
-            reused = self._reuse_block(type(block), first, last)
-            if reused is None:
+            if not reused:
                 decorate(block)
-            else:
-                block = reused
             yield block
             if self.controls and block._token.type == "heading_open" and last > first + 1:
                 yield self.syntax_block(lines[last - 1].rstrip("\r\n"), offsets[last - 1], last - 1, last)
@@ -429,7 +452,9 @@ class ProjectedRows(Sequence[Strip]):
 
     def __init__(self, layouts):
         self.layouts = layouts
-        self.max_width = max((width for _, _, width in layouts), default=0)
+        self.max_width = getattr(layouts, "max_width", None)
+        if self.max_width is None:
+            self.max_width = max((width for _, _, width in layouts), default=0)
         self._cache = {}
 
     def __len__(self):
@@ -543,6 +568,115 @@ def snapshot(document: RenderMarkdown) -> Projection:
     return Projection(rows, positions, document.source)
 
 
+class AlignedLayouts(Sequence):
+    """Compute glyph layout and source coordinates only for requested rows."""
+
+    def __init__(self, document, editor, glyphs, offsets):
+        self.lines = editor.document.lines.copy()
+        self.offsets = offsets
+        self.glyphs = glyphs
+        self.indent_width = editor.indent_width
+        self.headings = {token.map[0] for token in document.source_tokens
+                         if token.type == "heading_open" and token.tag == "h1" and token.map}
+        self.width = (editor.wrap_width if document.controls
+                      else getattr(document, "projection_width", document.region.width))
+        self.style = document.rich_style
+        self.boundaries = []
+        self.line_starts = []
+        self.rows = []
+        self._cache = {}
+        self.position_maps = {}
+        for row, line in enumerate(self.lines):
+            boundaries = [0, *editor.wrapped_document.get_offsets(row), len(line)]
+            self.boundaries.append(boundaries)
+            self.line_starts.append(len(self.rows))
+            self.rows.extend((row, start, end) for start, end in zip(boundaries, boundaries[1:]))
+        # Rendered editing text is no wider than its source. A source-width
+        # bound avoids measuring every off-screen row to size the scroll view.
+        self.max_width = max(self.width, editor.wrap_width) if editor.soft_wrap else max(
+            self.width, max((cell_len(line.expandtabs(self.indent_width)) for line in self.lines), default=0))
+
+    def __len__(self):
+        return len(self.rows)
+
+    def __getitem__(self, row):
+        if row < 0:
+            row += len(self)
+        if not 0 <= row < len(self):
+            raise IndexError(row)
+        if row not in self._cache:
+            line, start, end = self.rows[row]
+            segments, sources, positions, x = [], [], {}, 0
+            for column in range(start, end):
+                index = self.offsets[line] + column
+                positions[index] = Offset(x, row)
+                for segment in self.glyphs.get(index, []):
+                    text = segment.text.replace("\n", " ")
+                    if "\t" in text:
+                        text = (" " * x + text).expandtabs(self.indent_width)[x:]
+                    segments.append(Segment(text, segment.style))
+                    sources.append(index)
+                    x += cell_len(text)
+            positions[self.offsets[line] + end] = Offset(x, row)
+            if line in self.headings and len(self.boundaries[line]) == 2:
+                padding = max(0, (self.width - x) // 2)
+                if padding:
+                    segments.insert(0, Segment(" " * padding, self.style))
+                    sources.insert(0, None)
+                    x += padding
+                    positions = {index: point + Offset(padding, 0) for index, point in positions.items()}
+            self.position_maps[row] = positions
+            self._cache[row] = (segments, sources, x)
+        return self._cache[row]
+
+
+class AlignedProjection(Projection):
+    def __init__(self, layouts, source):
+        self.source = source
+        self.layouts = layouts
+        self.rows = ProjectedRows(layouts)
+        self.line_offsets = layouts.offsets[:-1]
+
+    @cached_property
+    def positions(self):
+        positions = {}
+        for row in range(len(self.layouts)):
+            self.layouts[row]
+            positions.update(self.layouts.position_maps[row])
+        return positions
+
+    @cached_property
+    def ordered(self):
+        return sorted(self.positions)
+
+    @cached_property
+    def visual(self):
+        visual = {}
+        for index, point in self.positions.items():
+            visual.setdefault(point.y, []).append((point.x, index))
+        return visual
+
+    @cached_property
+    def visual_rows(self):
+        return sorted(self.visual)
+
+    def offset(self, location):
+        index = self.index(location)
+        line, column = self.location(index)
+        boundaries = self.layouts.boundaries[line]
+        wrap = min(len(boundaries) - 2, bisect_right(boundaries, column) - 1)
+        row = self.layouts.line_starts[line] + wrap
+        self.layouts[row]
+        return self.layouts.position_maps[row][index]
+
+    def at(self, x, y):
+        row = max(0, min(len(self.layouts) - 1, y))
+        self.layouts[row]
+        positions = self.layouts.position_maps[row]
+        index = min(positions, key=lambda index: abs(positions[index].x - x))
+        return self.location(index)
+
+
 def aligned_snapshot(document: RenderMarkdown, editor: TextArea) -> Projection:
     """Lay out the shared renderer's styled content on the source wrap rows.
 
@@ -588,37 +722,7 @@ def aligned_snapshot(document: RenderMarkdown, editor: TextArea) -> Projection:
             index = offsets[row] + column
             glyphs[index] = [Segment(char, document.rich_style)]
 
-    rows, positions = [], {}
-    headings = {token.map[0] for token in document.source_tokens
-                if token.type == "heading_open" and token.tag == "h1" and token.map}
-    for line_index, line in enumerate(lines):
-        boundaries = [0, *editor.wrapped_document.get_offsets(line_index), len(line)]
-        for start, end in zip(boundaries, boundaries[1:]):
-            segments, sources, x = [], [], 0
-            for column in range(start, end):
-                index = offsets[line_index] + column
-                positions[index] = Offset(x, len(rows))
-                for segment in glyphs.get(index, []):
-                    text = segment.text.replace("\n", " ")
-                    if "\t" in text:
-                        text = (" " * x + text).expandtabs(editor.indent_width)[x:]
-                    segments.append(Segment(text, segment.style))
-                    sources.append(index)
-                    x += cell_len(text)
-            positions[offsets[line_index] + end] = Offset(x, len(rows))
-            if line_index in headings and len(boundaries) == 2:
-                target_width = (editor.wrap_width if document.controls
-                                else document.region.width)
-                padding = max(0, (target_width - x) // 2)
-                if padding:
-                    segments.insert(0, Segment(" " * padding, document.rich_style))
-                    sources.insert(0, None)
-                    x += padding
-                    for column in range(start, end + 1):
-                        index = offsets[line_index] + column
-                        positions[index] = positions[index] + Offset(padding, 0)
-            rows.append((segments, sources, x))
-    return Projection(ProjectedRows(rows), positions, document.source)
+    return AlignedProjection(AlignedLayouts(document, editor, glyphs, offsets), document.source)
 
 
 def styled_source(document: RenderMarkdown, lines: list[str]):
@@ -630,6 +734,15 @@ def styled_source(document: RenderMarkdown, lines: list[str]):
     for widget in document.walk_children():
         content = widget.render()
         if not isinstance(content, Content):
+            continue
+        source_cache = getattr(widget, "_mdv_source_styles", None)
+        if (source_cache is not None and source_cache[0] is content
+                and source_cache[1] == widget.visual_style and source_cache[2] == document.app.theme):
+            shift = getattr(widget, "_mdv_source_shift", 0)
+            for index, style in source_cache[3]:
+                index += shift
+                if 0 <= index < length:
+                    cells[index] = style
             continue
         visual_spans = []
         source_spans = []
@@ -649,11 +762,14 @@ def styled_source(document: RenderMarkdown, lines: list[str]):
                 styles.extend([style.rich_style.clear_meta_and_links()] * len(text))
             cached = widget._mdv_visual_cache = (key, styles)
         styles = cached[1]
+        mapped_styles = [(span.style.meta[SOURCE], styles[span.start])
+                         for span in source_spans if span.start < len(styles)]
+        widget._mdv_source_styles = (content, widget.visual_style, document.app.theme, mapped_styles)
         shift = getattr(widget, "_mdv_source_shift", 0)
-        for span in source_spans:
-            index = span.style.meta[SOURCE] + shift
-            if 0 <= index < length and span.start < len(styles):
-                cells[index] = styles[span.start]
+        for index, style in mapped_styles:
+            index += shift
+            if 0 <= index < length:
+                cells[index] = style
     result = []
     offset = 0
     cache = getattr(document, "_mdv_line_styles", {})
@@ -663,7 +779,7 @@ def styled_source(document: RenderMarkdown, lines: list[str]):
         active = cells[offset] if line else None
         for column in range(1, len(line) + 1):
             style = cells[offset + column] if column < len(line) else None
-            if style != active or column == len(line):
+            if (style is not active and style != active) or column == len(line):
                 if active is not None:
                     runs.append((start, column, active))
                 start, active = column, style

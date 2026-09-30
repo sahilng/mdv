@@ -73,3 +73,42 @@ def test_unfinished_bullet_is_not_a_setext_heading_in_editor():
     for underline in ('--', '---', '----'):
         assert any(token.type == 'heading_open' and token.tag == 'h2'
                    for token in HTMLMarkdownParser(editing=True).parse('Heading\n' + underline))
+
+
+def test_cached_inline_parsing_preserves_references_and_isolates_mutations():
+    from unittest.mock import Mock
+    from mdv.html import HTMLMarkdownParser
+
+    parser = HTMLMarkdownParser(editing=True)
+    parser.inline.parse = Mock(wraps=parser.inline.parse)
+    source = '**bold** [label][target]\nnext ![alt](image.png)\n\n[target]: /first\n'
+    initial = parser.parse(source)
+    calls = parser.inline.parse.call_count
+    inline = next(token for token in initial if token.type == 'inline')
+    inline.children[0].meta['source'] = 123
+    next(token for token in inline.children if token.type == 'softbreak').type = 'hardbreak'
+    next(token for token in inline.children if token.type == 'link_open').attrs['href'] = '/mutated'
+    image = next(token for token in inline.children if token.type == 'image')
+    image.children[0].content = 'mutated'
+    again = parser.parse(source)
+    assert parser.inline.parse.call_count == calls
+    assert [token.as_dict() for token in again] == [
+        token.as_dict() for token in HTMLMarkdownParser(editing=True).parse(source)]
+    changed = source.replace('/first', '/second')
+    actual = parser.parse(changed)
+    assert parser.inline.parse.call_count > calls
+    assert [token.as_dict() for token in actual] == [
+        token.as_dict() for token in HTMLMarkdownParser(editing=True).parse(changed)]
+
+
+def test_cached_inline_parsing_matches_fresh_parser_after_structural_edits():
+    from mdv.html import HTMLMarkdownParser
+
+    parser = HTMLMarkdownParser(editing=True)
+    for source in ('text\n- ', 'text\n- item', '> **bold**\n> next',
+                   '```python\n**bold**\n```', '**bold**\nnext',
+                   '<b>bold</b> <code>x</code>', '[label][ref]\n\n[ref]: /url',
+                   '[label][ref]', '| A | B |\n| - | - |\n| **a** | b |'):
+        for _ in range(2):
+            assert [token.as_dict() for token in parser.parse(source)] == [
+                token.as_dict() for token in HTMLMarkdownParser(editing=True).parse(source)]

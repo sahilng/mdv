@@ -102,3 +102,13 @@ and AI image descriptions are not configured. This viewer accepts local files.
 .venv/bin/python -m pip install -e '.[dev]'
 .venv/bin/pytest
 ```
+
+Measure editing refresh performance in both modes with a generated document:
+
+```sh
+.venv/bin/python scripts/benchmark_editing.py --paragraphs 1000
+```
+
+The benchmark reports median source-edit, Markdown-render, and projection times.
+Editing reuses unchanged blocks and inline parsing, skips hidden document layout,
+and coalesces refreshes at 40 ms while typing continues.

@@ -1,6 +1,9 @@
 """Translate embedded HTML to terminal-friendly Markdown without changing source."""
 
 from html.parser import HTMLParser
+from collections import OrderedDict
+from copy import deepcopy
+from dataclasses import replace
 import re
 
 from markdown_it import MarkdownIt
@@ -86,11 +89,47 @@ def html_markdown(source):
     return markdownify(str(soup), heading_style="ATX")
 
 
+def copy_inline_tokens(tokens):
+    """Copy mutable token fields without deep-copying immutable text and flags."""
+    return [replace(token, attrs=token.attrs.copy(),
+                    map=token.map.copy() if token.map is not None else None,
+                    meta=deepcopy(token.meta) if token.meta else {},
+                    children=copy_inline_tokens(token.children)
+                    if token.children is not None else None)
+            for token in tokens]
+
+
 class HTMLMarkdownParser(MarkdownIt):
     def __init__(self, *, editing=False, details=False):
         super().__init__("gfm-like")
         self.editing = editing
         self.details = details
+        if editing:
+            self._inline_cache = OrderedDict()
+            self.core.ruler.at("inline", self._parse_cached_inline)
+
+    def _parse_cached_inline(self, state):
+        # Block parsing remains document-wide: references and list / fence
+        # boundaries can change far from the edited line. Inline parsing can
+        # safely reuse results when both the text and reference environment match.
+        environment = repr(state.env)
+        for token in state.tokens:
+            if token.type != "inline":
+                continue
+            key = (token.content, environment)
+            children = self._inline_cache.get(key)
+            if children is None:
+                children = []
+                state.md.inline.parse(token.content, state.md, state.env, children)
+                self._inline_cache[key] = copy_inline_tokens(children)
+                if len(self._inline_cache) > 2048:
+                    self._inline_cache.popitem(last=False)
+            else:
+                self._inline_cache.move_to_end(key)
+                # Later core rules and the editor mutate tokens (soft breaks,
+                # HTML and source metadata); never expose the cached objects.
+                children = copy_inline_tokens(children)
+            token.children = children
 
     def parse(self, src, env=None):
         tokens = super().parse(src, env)

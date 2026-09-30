@@ -143,7 +143,8 @@ class Viewer(App):
         host = self.query_one(RenderHost)
         renderer = self.query_one(RenderMarkdown)
         target = editor if self.live_edit else preview
-        host.styles.width = max(10, target.scrollable_content_region.width)
+        renderer.projection_width = max(10, target.scrollable_content_region.width)
+        host.styles.width = renderer.projection_width
         renderer.set_class(self.live_edit, "controls")
         renderer.controls = self.live_edit
         renderer.breaks = True
@@ -170,7 +171,8 @@ class Viewer(App):
         if renderer.source != editor.text or renderer.controls != self.live_edit:
             self.schedule_scroll_sync()
             return
-        projection_key = (self._render_key, editor.wrap_width, editor.indent_width)
+        projection_key = (self._render_key, editor.wrap_width, editor.indent_width,
+                          renderer.projection_width)
         if projection_key != self._projection_key:
             if self.live_edit:
                 editor.set_styles(styled_source(renderer, editor.document.lines), renderer)
@@ -181,7 +183,7 @@ class Viewer(App):
         if not self.live_edit:
             self.sync_scroll(editor, self.query_one(AlignedPreview))
         target = editor if self.live_edit else self.query_one(AlignedPreview)
-        if self._preview_pending or renderer.region.width != max(10, target.scrollable_content_region.width):
+        if self._preview_pending or renderer.projection_width != max(10, target.scrollable_content_region.width):
             self.schedule_scroll_sync()
 
     def on_resize(self) -> None:
@@ -237,8 +239,11 @@ class Viewer(App):
             else:
                 content = await asyncio.to_thread(load_document, self.path)
             self.content = content
-            await viewer.document.update(content)
-            status.update(f"{self.path}  ·  {len(content.splitlines()):,} lines")
+            # Direct editing needs only the edit renderer. Populate the hidden
+            # read view when leaving the editor instead of rendering twice.
+            if not (self.start_editing and self.path.suffix.lower() in MARKDOWN_SUFFIXES):
+                await viewer.document.update(content)
+                status.update(f"{self.path}  ·  {len(content.splitlines()):,} lines")
             if self.start_editing:
                 self.start_editing = False
                 self.action_edit()
@@ -295,10 +300,14 @@ class Viewer(App):
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         if self.editing:
-            if self._typing_timer is not None:
-                self._typing_timer.stop()
-            self._typing_timer = self.set_timer(0.12, self.schedule_scroll_sync)
+            # Coalesce bursts without postponing styling until typing stops.
+            if self._typing_timer is None:
+                self._typing_timer = self.set_timer(0.04, self._refresh_after_typing)
             self.update_editor_status()
+
+    def _refresh_after_typing(self) -> None:
+        self._typing_timer = None
+        self.schedule_scroll_sync()
 
     def action_save(self) -> None:
         content = self.query_one("#editor", TextArea).text

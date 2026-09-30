@@ -145,7 +145,7 @@ async def test_live_mouse_selection_wrap_resize_and_up(tmp_path):
         assert editor.cursor_location == (0, 0)
         await pilot.resize_terminal(45, 15)
         await settle(app, pilot)
-        assert app.query_one(RenderMarkdown).region.width == editor.scrollable_content_region.width
+        assert app.query_one(RenderMarkdown).projection_width == editor.scrollable_content_region.width
         assert max(strip.cell_length for strip in editor.projection.rows) <= editor.scrollable_content_region.width
 
 
@@ -259,7 +259,7 @@ async def test_edit_burst_coalesces_and_read_view_updates_on_close(tmp_path, mon
         for char in "abcdef":
             editor.insert(char, location=editor.document.end)
         await pilot.pause()
-        assert reader.source == "# Original\n\nText\n"
+        assert reader.source == ""
         assert len(updates) == 1
         release.set()
         await settle(app, pilot)
@@ -447,6 +447,8 @@ async def test_split_preview_reuses_styles_and_draws_rows_on_demand(tmp_path):
         cache = block._mdv_glyph_cache
         assert isinstance(preview.rows, ProjectedRows)
         assert len(preview.rows._cache) < len(preview.rows) // 2
+        assert len(preview.rows.layouts._cache) < len(preview.rows) // 2
+        assert 'positions' not in preview.projection.__dict__
         editor.insert('prefix\n\n', location=(0, 0))
         await settle(app, pilot)
         assert block._mdv_glyph_cache is cache
@@ -456,6 +458,7 @@ async def test_split_preview_reuses_styles_and_draws_rows_on_demand(tmp_path):
         await pilot.pause()
         expected = editor.text.rindex('unchanged')
         bottom = preview.projection.offset(preview.projection.location(expected)).y
+        assert 'positions' not in preview.projection.__dict__
         assert 'unchanged paragraph' in preview.rows[bottom].text
         # Source metadata follows insertions even for rows first drawn later.
         assert any(segment.style and segment.style.meta.get(SOURCE) == expected
@@ -487,3 +490,81 @@ async def test_starting_a_bullet_does_not_temporarily_style_previous_text_as_h2(
         await pilot.press('ctrl+z')
         await settle(app, pilot)
         assert not renderer.query(MarkdownH2)
+
+
+@pytest.mark.parametrize('live', [False, True])
+async def test_refresh_skips_building_unchanged_blocks_and_hidden_layout(tmp_path, monkeypatch, live):
+    from textual.widgets._markdown import MarkdownParagraph
+    from mdv.live import RenderHost
+
+    path = tmp_path / 'reuse.md'
+    path.write_text('First\n\n' + '\n\n'.join(f'**Paragraph {n}**' for n in range(80)))
+    app = Viewer(path, start_editing=True, live_edit=live)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        host = app.query_one(RenderHost)
+        assert not host.display
+        def no_layout(*args, **kwargs):
+            raise AssertionError('Editing must not lay out the hidden document')
+        monkeypatch.setattr(host, 'arrange', no_layout)
+        built = []
+        original = MarkdownParagraph.__init__
+        def count_blocks(self, *args, **kwargs):
+            built.append(self)
+            original(self, *args, **kwargs)
+        monkeypatch.setattr(MarkdownParagraph, '__init__', count_blocks)
+        editor = app.query_one(MarkdownEditor)
+        editor.insert('x', location=(0, 0))
+        await settle(app, pilot)
+        assert len(built) == 1
+        projection = editor.projection if live else app.query_one(AlignedPreview).projection
+        assert source_style(projection, editor.text.rindex('Paragraph')).bold
+        await pilot.resize_terminal(65, 20)
+        await settle(app, pilot)
+        assert len(built) == 1
+
+
+@pytest.mark.parametrize('live', [False, True])
+async def test_reference_edits_refresh_unchanged_link_blocks(tmp_path, live):
+    path = tmp_path / 'references.md'
+    path.write_text('[label][ref]\n\n[ref]: https://example.com/old\n')
+    app = Viewer(path, start_editing=True, live_edit=live)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        editor = app.query_one(MarkdownEditor)
+        editor.replace('https://example.com/new', (2, 7), (2, len(editor.document.lines[2])))
+        await settle(app, pilot)
+        renderer = app.query_one(RenderMarkdown)
+        inline = next(token for token in renderer.source_tokens if token.type == 'inline')
+        assert next(token for token in inline.children if token.type == 'link_open').attrs['href'] == 'https://example.com/new'
+        projection = editor.projection if live else app.query_one(AlignedPreview).projection
+        style = source_style(projection, 1)
+        if live:
+            assert style.underline
+        else:
+            assert style.meta['@click'] == "link('https://example.com/new')"
+
+
+@pytest.mark.parametrize('live', [False, True])
+async def test_preview_refreshes_during_continuous_typing(tmp_path, monkeypatch, live):
+    import asyncio
+
+    path = tmp_path / 'continuous.md'
+    path.write_text('Text\n')
+    app = Viewer(path, start_editing=True, live_edit=live)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        renderer = app.query_one(RenderMarkdown)
+        original = renderer.update
+        updates = []
+        async def record(source):
+            updates.append(source)
+            await original(source)
+        monkeypatch.setattr(renderer, 'update', record)
+        editor = app.query_one(MarkdownEditor)
+        for _ in range(12):
+            editor.insert('x', location=(0, 0))
+            await asyncio.sleep(0.025)
+        assert updates  # No pause long enough for the old trailing debounce.
+        await settle(app, pilot)
+        assert updates[-1] == editor.text
