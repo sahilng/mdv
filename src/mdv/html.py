@@ -1,6 +1,7 @@
 """Translate embedded HTML to terminal-friendly Markdown without changing source."""
 
 from html.parser import HTMLParser
+import re
 
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
@@ -93,6 +94,20 @@ class HTMLMarkdownParser(MarkdownIt):
 
     def parse(self, src, env=None):
         tokens = super().parse(src, env)
+        if self.editing:
+            lines = src.splitlines()
+            for index, token in enumerate(tokens):
+                if (token.type == "heading_open" and token.tag == "h2" and token.markup == "-"
+                        and token.map and index + 2 < len(tokens)):
+                    underline = lines[token.map[1] - 1]
+                    if re.fullmatch(r"[ \t]*(?:>[ \t]*)*-[ \t]*", underline):
+                        # A single dash is ambiguous while beginning a bullet.
+                        # Preserve the source as a paragraph until it has text
+                        # or enough dashes to be an intentional heading underline.
+                        token.type, token.tag, token.markup = "paragraph_open", "p", ""
+                        tokens[index + 1].map = token.map.copy()
+                        closing = tokens[index + 2]
+                        closing.type, closing.tag, closing.markup = "paragraph_close", "p", ""
         result = []
         for token in tokens:
             if token.type == "inline":

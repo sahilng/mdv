@@ -59,3 +59,17 @@ def test_multiline_mapping_repeated_prose():
     assert columns == sorted(columns)
     for row in (0, 10, 999):
         assert columns[row * len("**word** repeated\n") + 2] == row * len("word repeated\n")
+
+
+def test_unfinished_bullet_is_not_a_setext_heading_in_editor():
+    from mdv.html import HTMLMarkdownParser
+
+    for source in ('Normal text\n-', 'Normal text\n- ',
+                   'Normal text\n  - ', '> Normal text\n> - '):
+        assert not any(token.type == 'heading_open'
+                       for token in HTMLMarkdownParser(editing=True).parse(source))
+        assert any(token.type == 'heading_open' and token.tag == 'h2'
+                   for token in HTMLMarkdownParser().parse(source))
+    for underline in ('--', '---', '----'):
+        assert any(token.type == 'heading_open' and token.tag == 'h2'
+                   for token in HTMLMarkdownParser(editing=True).parse('Heading\n' + underline))

@@ -460,3 +460,30 @@ async def test_split_preview_reuses_styles_and_draws_rows_on_demand(tmp_path):
         # Source metadata follows insertions even for rows first drawn later.
         assert any(segment.style and segment.style.meta.get(SOURCE) == expected
                    for segment in preview.rows[bottom])
+
+
+@pytest.mark.parametrize('live', [False, True])
+async def test_starting_a_bullet_does_not_temporarily_style_previous_text_as_h2(tmp_path, live):
+    from textual.widgets._markdown import MarkdownH2
+
+    path = tmp_path / 'bullet-start.md'
+    path.write_text('Normal text\n')
+    app = Viewer(path, start_editing=True, live_edit=live)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        editor = app.query_one(MarkdownEditor)
+        renderer = app.query_one(RenderMarkdown)
+        def projection():
+            return editor.projection if live else app.query_one(AlignedPreview).projection
+        normal = source_style(projection(), 0)
+        editor.move_cursor(editor.document.end)
+        for key in ('minus', 'space', 'i', 't', 'e', 'm'):
+            await pilot.press(key)
+            await settle(app, pilot)
+            assert not renderer.query(MarkdownH2)
+            actual = source_style(projection(), 0)
+            assert (actual.color, actual.bgcolor, actual.bold) == (normal.color, normal.bgcolor, normal.bold)
+        assert editor.text == 'Normal text\n- item'
+        await pilot.press('ctrl+z')
+        await settle(app, pilot)
+        assert not renderer.query(MarkdownH2)
