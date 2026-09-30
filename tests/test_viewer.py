@@ -12,6 +12,17 @@ from mdv.cli import main
 from mdv.document import load_document
 
 
+async def settle_preview(app, pilot):
+    # Rendering is queued after layout and no longer blocks Changed messages.
+    for _ in range(10):
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        if not app._refreshing_preview and not app._preview_running and not app._preview_scheduled:
+            return
+    raise AssertionError("Preview did not settle")
+
+
 @pytest.mark.parametrize("existing", [False, True])
 async def test_start_in_editor_and_save(tmp_path, existing):
     path = tmp_path / "notes.md"
@@ -140,7 +151,7 @@ async def test_edit_preview_save_and_discard(tmp_path):
         assert not viewer.show_table_of_contents
         editor.load_text("# Updated\n")
         await pilot.pause()
-        assert viewer.document.table_of_contents[0][1] == "Updated"
+        assert viewer.document.table_of_contents[0][1] == "Original"
         assert path.read_text() == "# Original\n"
         await pilot.press("escape")
         assert app.editing
@@ -178,7 +189,7 @@ async def test_edit_scroll_sync(tmp_path):
     app = Viewer(path, start_editing=True)
     async with app.run_test(size=(100, 30)) as pilot:
         await app.workers.wait_for_complete()
-        await pilot.pause()
+        await settle_preview(app, pilot)
         editor = app.query_one(TextArea)
         preview = app.query_one(AlignedPreview)
         assert editor.max_scroll_y > 0
@@ -186,25 +197,25 @@ async def test_edit_scroll_sync(tmp_path):
         for source, target in ((editor, preview), (preview, editor)):
             for fraction in (1, 0):
                 source.scroll_to(y=source.max_scroll_y * fraction, animate=False, immediate=True)
-                await pilot.pause()
+                await settle_preview(app, pilot)
                 assert target.scroll_y == pytest.approx(target.max_scroll_y * fraction, abs=1)
                 assert source.scroll_y == pytest.approx(source.max_scroll_y * fraction, abs=1)
 
         editor.move_cursor(editor.document.end)
-        await pilot.pause()
+        await settle_preview(app, pilot)
         assert preview.scroll_y == preview.max_scroll_y
         await pilot.press("enter", "x")
-        await pilot.pause()
+        await settle_preview(app, pilot)
         assert preview.scroll_y == pytest.approx(preview.max_scroll_y, abs=1)
         await pilot.resize_terminal(80, 24)
-        await pilot.pause()
+        await settle_preview(app, pilot)
         assert preview.scroll_y / preview.max_scroll_y == pytest.approx(
             editor.scroll_y / editor.max_scroll_y, abs=0.01
         )
         await pilot.press("ctrl+s", "escape")
         previous_editor_y = editor.scroll_y
         preview.scroll_to(y=0, animate=False, immediate=True)
-        await pilot.pause()
+        await settle_preview(app, pilot)
         assert editor.scroll_y == previous_editor_y
 
 
@@ -228,7 +239,7 @@ async def test_preview_rows_align_with_source(tmp_path):
     app = Viewer(path, start_editing=True)
     async with app.run_test(size=(100, 30)) as pilot:
         await app.workers.wait_for_complete()
-        await pilot.pause()
+        await settle_preview(app, pilot)
         editor = app.query_one(TextArea)
         preview = app.query_one(AlignedPreview)
 
@@ -259,17 +270,17 @@ async def test_preview_rows_align_with_source(tmp_path):
             for source_pane, target in ((editor, preview), (preview, editor)):
                 for fraction in (0, 0.37, 1):
                     source_pane.scroll_to(y=int(source_pane.max_scroll_y * fraction), animate=False, immediate=True)
-                    await pilot.pause()
+                    await settle_preview(app, pilot)
                     assert target.scroll_y == source_pane.scroll_y
 
         await check_alignment()
         await pilot.resize_terminal(61, 24)
-        await pilot.pause()
+        await settle_preview(app, pilot)
         await check_alignment()
         editor.load_text("Intro\n\n" + editor.text)
-        await pilot.pause()
+        await settle_preview(app, pilot)
         await app.workers.wait_for_complete()
-        await pilot.pause()
+        await settle_preview(app, pilot)
         await check_alignment()
         await pilot.press("ctrl+s", "escape")
         assert not preview.display
@@ -297,7 +308,7 @@ async def test_aligned_preview_links_and_empty_edits(tmp_path, monkeypatch):
     app = Viewer(path, start_editing=True)
     async with app.run_test() as pilot:
         await app.workers.wait_for_complete()
-        await pilot.pause()
+        await settle_preview(app, pilot)
         editor = app.query_one(TextArea)
         preview = app.query_one(AlignedPreview)
         link = preview.projection.offset((0, 1))
@@ -305,21 +316,23 @@ async def test_aligned_preview_links_and_empty_edits(tmp_path, monkeypatch):
             preview.content_region.x - preview.region.x + link.x,
             preview.content_region.y - preview.region.y + link.y,
         ))
-        await pilot.pause()
+        await settle_preview(app, pilot)
         browser.assert_called_once_with("https://example.com", new=2)
         preview.action_link("#target")
-        await pilot.pause()
+        await settle_preview(app, pilot)
         target_y = editor.wrapped_document.location_to_offset((62, 0)).y
         assert editor.scroll_y == target_y
         assert preview.scroll_y == preview.projection.offset((62, 0)).y
         editor.load_text("")
-        await pilot.pause()
+        await settle_preview(app, pilot)
+        await app.workers.wait_for_complete()
+        await settle_preview(app, pilot)
         assert all(not row.text.strip() for row in preview.rows)
         assert editor.scroll_y == preview.scroll_y == 0
         await pilot.press("ctrl+d")
         assert not app.editing
         await pilot.press("e")
-        await pilot.pause()
+        await settle_preview(app, pilot)
         assert "Website" in "".join(row.text for row in preview.rows)
 
 

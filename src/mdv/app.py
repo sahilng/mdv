@@ -83,6 +83,10 @@ class Viewer(App):
         self._syncing_scroll = False
         self._refreshing_preview = False
         self._render_generation = 0
+        self._preview_scheduled = False
+        self._preview_running = False
+        self._preview_pending = False
+        self._render_key = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -99,7 +103,6 @@ class Viewer(App):
         preview = self.query_one(AlignedPreview)
         self.watch(editor, "scroll_y", lambda: self.sync_scroll(editor, preview), init=False)
         self.watch(preview, "scroll_y", lambda: self.sync_scroll(preview, editor), init=False)
-        self.watch(editor, "size", self.schedule_scroll_sync, init=False)
         self.query_one(MarkdownViewer).document.focus()
         self.action_reload()
 
@@ -112,10 +115,16 @@ class Viewer(App):
         finally:
             self._syncing_scroll = False
 
-    @work(exclusive=True, group="render")
+    @work(group="render")
     async def sync_preview(self) -> None:
         if not self.editing:
             return
+        # Let an in-flight DOM update finish; then render only the newest buffer.
+        if self._preview_running:
+            self._preview_pending = True
+            return
+        self._preview_running = True
+        self._preview_pending = False
         self._render_generation += 1
         generation = self._render_generation
         editor = self.query_one("#editor", MarkdownEditor)
@@ -127,18 +136,26 @@ class Viewer(App):
         renderer.set_class(self.live_edit, "controls")
         renderer.controls = self.live_edit
         renderer.breaks = not self.live_edit
-        await renderer.update(editor.text)
+        key = (editor.text, self.live_edit, self.theme)
+        # Width-only changes can reflow the existing widget tree.
+        if key != self._render_key:
+            await renderer.update(editor.text)
+            self._render_key = key
         for block in renderer.query("MarkdownFence"):
             if hasattr(block, "_mdv_content"):
                 block.set_content(block._mdv_content)
         self.call_after_refresh(self.finish_projection, generation)
 
     def finish_projection(self, generation: int) -> None:
-        if not self.editing or generation != self._render_generation:
+        if generation != self._render_generation:
+            return
+        self._preview_running = False
+        if not self.editing:
             return
         renderer = self.query_one(RenderMarkdown)
         editor = self.query_one("#editor", MarkdownEditor)
         if renderer.source != editor.text or renderer.controls != self.live_edit:
+            self.schedule_scroll_sync()
             return
         projection = snapshot(renderer) if self.live_edit else aligned_snapshot(renderer, editor)
         if self.live_edit:
@@ -151,16 +168,24 @@ class Viewer(App):
         if not self.live_edit:
             self.sync_scroll(editor, self.query_one(AlignedPreview))
         target = editor if self.live_edit else self.query_one(AlignedPreview)
-        if self.query_one(RenderMarkdown).region.width != max(10, target.scrollable_content_region.width):
+        if self._preview_pending or renderer.region.width != max(10, target.scrollable_content_region.width):
             self.schedule_scroll_sync()
 
     def on_resize(self) -> None:
-        self.schedule_scroll_sync()
+        self.call_after_refresh(self.schedule_scroll_sync)
 
     def schedule_scroll_sync(self) -> None:
         if self.editing:
             self._refreshing_preview = True
-            self.call_after_refresh(self.sync_preview)
+            if self._preview_running:
+                self._preview_pending = True
+            elif not self._preview_scheduled:
+                self._preview_scheduled = True
+                self.call_after_refresh(self._start_preview)
+
+    def _start_preview(self) -> None:
+        self._preview_scheduled = False
+        self.sync_preview()
 
     async def on_aligned_preview_link_clicked(self, event: AlignedPreview.LinkClicked) -> None:
         document = self.query_one(MarkdownViewer).document
@@ -168,11 +193,11 @@ class Viewer(App):
             # Resolve anchors using the normal Markdown renderer's heading IDs.
             from textual._slug import TrackedSlugs
 
+            renderer = self.query_one(RenderMarkdown)
             slugs = TrackedSlugs()
-            for _, title, block_id in document.table_of_contents or []:
+            for _, title, block_id in renderer.table_of_contents or []:
                 if slugs.slug(title) == event.href[1:]:
-                    block = document.query_one(f"#{block_id}")
-                    editor = self.query_one("#editor", TextArea)
+                    block = renderer.query_one(f"#{block_id}")
                     preview = self.query_one(AlignedPreview)
                     if preview.projection is not None:
                         offset = preview.projection.offset((block.source_range[0], 0))
@@ -255,14 +280,9 @@ class Viewer(App):
             f"{self.path}  ·  {marker}  ·  Ctrl+L live/split · Ctrl+S save · Ctrl+Q quit · Esc read · Ctrl+D discard"
         )
 
-    async def on_text_area_changed(self, event: TextArea.Changed) -> None:
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
         if self.editing:
-            # Rendering changes scroll bounds; wait for layout before syncing.
-            self._refreshing_preview = True
-            try:
-                await self.query_one(MarkdownViewer).document.update(event.text_area.text)
-            finally:
-                self.call_after_refresh(self.sync_preview)
+            self.schedule_scroll_sync()
             self.update_editor_status()
 
     def action_save(self) -> None:
@@ -275,13 +295,16 @@ class Viewer(App):
         self.content = content
         self.update_editor_status()
 
-    def action_close_editor(self) -> None:
+    async def action_close_editor(self) -> None:
         if self.dirty:
             self.notify("Save with Ctrl+S or discard with Ctrl+D before leaving the editor.")
             return
         self.editing = False
         self.screen.remove_class("editing")
         viewer = self.query_one(MarkdownViewer)
+        # Keep the hidden read view out of the typing path.
+        if viewer.document.source != (self.content or ""):
+            await viewer.document.update(self.content or "")
         viewer.show_table_of_contents = self.show_toc
         viewer.document.focus()
         self.query_one("#status", Static).update(str(self.path))
@@ -289,8 +312,7 @@ class Viewer(App):
 
     async def action_discard(self) -> None:
         self.query_one("#editor", TextArea).load_text(self.content or "")
-        await self.query_one(MarkdownViewer).document.update(self.content or "")
-        self.action_close_editor()
+        await self.action_close_editor()
 
     def action_quit_editor(self) -> None:
         self.action_quit()

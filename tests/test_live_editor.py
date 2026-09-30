@@ -227,3 +227,45 @@ async def test_live_markers_appear_once_and_survive_toggling(tmp_path):
             assert "• apple" in "\n".join(row.text for row in preview.rows)
             await pilot.press("ctrl+l")
             await settle(app, pilot)
+
+
+async def test_edit_burst_coalesces_and_read_view_updates_on_close(tmp_path, monkeypatch):
+    import asyncio
+
+    path = tmp_path / "burst.md"
+    path.write_text("# Original\n\nText\n")
+    app = Viewer(path, start_editing=True)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        renderer = app.query_one(RenderMarkdown)
+        reader = app.query_one(MarkdownViewer).document
+        editor = app.query_one(MarkdownEditor)
+        original_update = renderer.update
+        started, release = asyncio.Event(), asyncio.Event()
+        updates = []
+
+        async def delayed_update(text):
+            updates.append(text)
+            if len(updates) == 1:
+                started.set()
+                await release.wait()
+            await original_update(text)
+
+        monkeypatch.setattr(renderer, "update", delayed_update)
+        editor.load_text("# Changed\n\nText\n")
+        await asyncio.wait_for(started.wait(), timeout=5)
+        for char in "abcdef":
+            editor.insert(char, location=editor.document.end)
+        await pilot.pause()
+        assert reader.source == "# Original\n\nText\n"
+        assert len(updates) == 1
+        release.set()
+        await settle(app, pilot)
+        assert len(updates) == 2
+        assert app.query_one(AlignedPreview).projection.source == editor.text
+        await pilot.resize_terminal(65, 20)
+        await settle(app, pilot)
+        assert len(updates) == 2  # Reflow reuses the mounted Markdown blocks.
+        await pilot.press("ctrl+s", "escape")
+        assert reader.source == path.read_text() == editor.text
+        assert reader.table_of_contents[0][1] == "Changed"

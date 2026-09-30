@@ -27,6 +27,9 @@ class MarkdownEditor(TextArea):
     live_render = False
     projection: Projection | None = None
 
+    def on_resize(self) -> None:
+        self.app.schedule_scroll_sync()
+
     def set_live_render(self, enabled: bool) -> None:
         self.live_render = enabled
         self.show_line_numbers = not enabled
