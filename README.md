@@ -53,6 +53,10 @@ to scroll; `g` / `G` jump to the start / end. Press `t` to toggle contents,
 `r` to reload, and `q` to quit. Conversion runs in the background so the UI
 stays responsive. Click HTTP or HTTPS links to open them in your default browser.
 Heading links navigate within the document; other links display their destination.
+Embedded HTML headings, paragraphs, lists, tables, links, and common inline
+formatting render as terminal Markdown. HTML source stays intact while editing,
+with tags visible in gray in live mode. `<details>` sections have clickable
+summary controls in the read view. CSS and JavaScript are not executed.
 
 Press `e` on a Markdown file to edit its source in the left pane with a live
 preview on the right. Use `Ctrl+S` to save, `Ctrl+Q` to quit directly, and `Esc`
@@ -62,10 +66,11 @@ Tables use source-aligned rows, and scrolling either pane keeps the rows togethe
 
 Press `Ctrl+L` while editing to toggle a single-pane live editor, or start there
 with `--live-edit`. The whole document stays rendered, including the text being
-edited, with Markdown syntax visible in gray throughout. Source list markers,
+edited, with Markdown syntax visible in gray throughout. Newlines and blank
+lines remain visible and editable. Source list markers,
 quote markers, and rules appear once, without duplicate rendered markers. Arrow keys, selection,
 undo, and redo work across the entire document; `Ctrl+Home` / `Ctrl+End` jump to
-the start / end. Long code lines scroll horizontally. Both edit modes follow the
+the start / end. Long code lines wrap with the source. Both edit modes follow the
 selected read-view theme, including changes made while editing.
 
 Unsaved changes prevent leaving the editor; `Ctrl+D` discards them and returns

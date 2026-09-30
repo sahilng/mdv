@@ -4,6 +4,8 @@ Textual owns block layout, CSS, tables, and syntax highlighting. Source metadata
 survives its renderer and lets the editor navigate the resulting terminal cells.
 """
 
+import asyncio
+from functools import lru_cache
 from bisect import bisect_right
 from dataclasses import dataclass, field
 import re
@@ -15,10 +17,12 @@ from textual.geometry import Offset, Region
 from textual.strip import Strip
 from textual.style import Style
 from textual.widgets import Markdown, TextArea
-from textual.widgets._markdown import MarkdownFence, MarkdownParagraph
+from textual.widgets._markdown import MarkdownBlock, MarkdownListItem, MarkdownFence, MarkdownParagraph, MarkdownTable, MarkdownTableContent
+from markdown_it import MarkdownIt
 from markdown_it.token import Token
 
 from .preview import source_columns
+from .html import HTMLMarkdownParser
 
 
 SOURCE = "mdv_source"
@@ -26,25 +30,33 @@ GRAY = "#808080"
 
 
 def located(content: Content, source: str, start: int, *, controls: bool, breaks: bool) -> Content:
+    return _located(content.plain, tuple(content.spans), source, start, controls, breaks)
+
+
+@lru_cache(maxsize=512)
+def _located(plain, original_spans, source, start, controls, breaks) -> Content:
     """Project the read renderer's inline styles onto source, or annotate output."""
+    content = Content(plain, spans=original_spans)
     columns = source_columns(source, content.plain)
     if controls:
         spans = []
-        # Keep newlines inside paragraphs soft in live mode, as in read mode.
         text = source if breaks else source.replace("\n", " ")
+        styles = [[] for _ in content.plain]
+        for span in content.spans:
+            for position in range(span.start, min(span.end, len(styles))):
+                styles[position].append(span.style)
         for index, char in enumerate(source):
             first, last = columns[index:index + 2]
             visible = last == first + 1 and content.plain[first:last] == char
             if not visible and char == "\n" and last == first + 1:
                 visible = True
             if visible:
-                for span in content.spans:
-                    if span.start <= first < span.end:
-                        # Links select text while editing, rather than executing actions.
-                        if isinstance(span.style, Style) and span.style.meta.get("@click"):
-                            spans.append(Span(index, index + 1, "$link-color underline"))
-                        else:
-                            spans.append(Span(index, index + 1, span.style))
+                for style in styles[first] if first < len(styles) else []:
+                    # Links select text while editing, rather than executing actions.
+                    if isinstance(style, Style) and style.meta.get("@click"):
+                        spans.append(Span(index, index + 1, "$link-color underline"))
+                    else:
+                        spans.append(Span(index, index + 1, style))
             else:
                 spans.append(Span(index, index + 1, GRAY))
             spans.append(Span(index, index + 1, Style.from_meta({SOURCE: start + index})))
@@ -70,9 +82,93 @@ class RenderMarkdown(Markdown):
     """
 
     def __init__(self, *, controls: bool = False, breaks: bool = False, **kwargs):
-        super().__init__("", open_links=False, **kwargs)
+        super().__init__("", open_links=False, parser_factory=lambda: HTMLMarkdownParser(editing=True), **kwargs)
         self.controls = controls
         self.breaks = breaks
+
+    def on_resize(self) -> None:
+        # Mounting may finish before the renderer's new height is laid out.
+        # Take another projection once its final geometry is available.
+        self.app.schedule_scroll_sync()
+
+    async def update(self, markdown: str) -> None:
+        """Keep unchanged mounted blocks when updating an editing document."""
+        parser = self._parser_factory() if self._parser_factory else MarkdownIt("gfm-like")
+        async with self.lock:
+            env = {}
+            tokens = await asyncio.to_thread(parser.parse, markdown, env)
+            old = list(self.children)
+            previous = getattr(self, "_block_keys", [])
+            self._markdown = markdown
+            self._table_of_contents = None
+            self._theme = self.app.theme
+            lines = markdown.splitlines(keepends=True)
+            offsets = [0]
+            for line in lines:
+                offsets.append(offsets[-1] + len(line))
+            blocks = list(self._parse_markdown(tokens))
+            keys = []
+            environment = repr(env)
+            for block in blocks:
+                first, last = block.source_range
+                keys.append((type(block), first, last, offsets[min(first, len(lines))],
+                             "".join(lines[first:last]), self.controls, self.breaks,
+                             self.app.theme, environment))
+            prefix = 0
+            while prefix < min(len(previous), len(keys)) and previous[prefix] == keys[prefix]:
+                prefix += 1
+            suffix = 0
+            while (suffix < min(len(previous), len(keys)) - prefix
+                   and (previous[-1 - suffix][0], previous[-1 - suffix][4:])
+                   == (keys[-1 - suffix][0], keys[-1 - suffix][4:])):
+                suffix += 1
+            old_end = len(old) - suffix
+            new_end = len(blocks) - suffix
+            with self.app.batch_update():
+                # Reuse unchanged suffixes even when typing shifts their source offsets.
+                for index in range(suffix):
+                    if previous[-1 - index] != keys[-1 - index]:
+                        self._update_block(old[-1 - index], blocks[-1 - index])
+                for block in old[prefix:old_end]:
+                    await block.remove()
+                added = blocks[prefix:new_end]
+                if added:
+                    if suffix:
+                        await self.mount_all(added, before=old[old_end])
+                    else:
+                        await self.mount_all(added)
+            self._block_keys = keys
+            self._last_parsed_line = len(lines) - (1 if lines and lines[-1].strip() else 0)
+            self.post_message(Markdown.TableOfContentsUpdated(self, self.table_of_contents))
+
+    def _update_block(self, existing, replacement):
+        existing.source_range = replacement.source_range
+        existing._token = replacement._token
+        existing._inline_token = replacement._inline_token
+        existing.set_content(replacement._content)
+        if isinstance(existing, MarkdownFence):
+            existing._highlighted_code = replacement._highlighted_code
+            existing._mdv_content = replacement._mdv_content
+            existing.set_content(replacement._mdv_content)
+        def mounted_blocks(widget):
+            for child in widget.children:
+                if isinstance(child, MarkdownBlock):
+                    yield child
+                else:
+                    yield from mounted_blocks(child)
+
+        children = existing._blocks or list(mounted_blocks(existing))
+        updated_children = []
+        for child in replacement._blocks:
+            # Textual lays list items out in Horizontal/Vertical containers,
+            # discarding the parser's list-item widgets during composition.
+            updated_children.extend(child._blocks if isinstance(child, MarkdownListItem) else [child])
+        for child, updated in zip(children, updated_children):
+            self._update_block(child, updated)
+        if isinstance(existing, MarkdownTable):
+            headers, rows = existing._get_headers_and_rows()
+            existing._headers, existing._rows = headers, rows
+            existing.query_one(MarkdownTableContent)._update_content(headers, rows)
 
     def _parse_markdown(self, tokens):
         tokens = list(tokens)
@@ -183,7 +279,7 @@ class RenderMarkdown(Markdown):
                     first, last = child.source_range
                     if first > consumed:
                         children.append(self.syntax_block(
-                            "".join(lines[consumed:first]).rstrip("\r\n"),
+                            "".join(lines[consumed:first]).removesuffix("\n").removesuffix("\r"),
                             offsets[consumed], consumed, first))
                     children.append(child)
                     consumed = max(consumed, last)
@@ -215,8 +311,8 @@ class RenderMarkdown(Markdown):
             first, last = block.source_range
             if self.controls and first > consumed:
                 # Whitespace and reference definitions are editable too.
-                yield self.syntax_block("".join(lines[consumed:first]).rstrip("\r\n"), offsets[consumed], consumed, first)
-            if self.breaks and first > consumed + 1 and not "".join(lines[consumed:first]).strip():
+                yield self.syntax_block("".join(lines[consumed:first]).removesuffix("\n").removesuffix("\r"), offsets[consumed], consumed, first)
+            if not self.controls and self.breaks and first > consumed + 1 and not "".join(lines[consumed:first]).strip():
                 spacer = self.syntax_block("", offsets[consumed], consumed, first)
                 spacer.styles.height = first - consumed - 1
                 yield spacer
@@ -226,19 +322,20 @@ class RenderMarkdown(Markdown):
                 yield self.syntax_block(lines[last - 1].rstrip("\r\n"), offsets[last - 1], last - 1, last)
             consumed = max(consumed, last)
         if self.controls and (consumed < len(lines) or not tokens or self.source.endswith("\n")):
-            yield self.syntax_block("".join(lines[consumed:]).rstrip("\r\n"), offsets[consumed], consumed, len(lines))
+            yield self.syntax_block("".join(lines[consumed:]), offsets[consumed], consumed, len(lines))
 
     def syntax_block(self, raw: str, offset: int, first: int, last: int):
         token = Token("paragraph_open", "p", 1)
         token.map = [first, last]
         block = MarkdownParagraph(self, token)
-        content = located(Content(), raw, offset, controls=True, breaks=True)
-        if not raw:
-            content = Content(" ").stylize(Style.from_meta({SOURCE: offset}))
+        parts = []
+        for line in raw.split("\n"):
+            parts.append(located(Content(), line, offset, controls=True, breaks=True) if line
+                         else Content(" ").stylize(Style.from_meta({SOURCE: offset})))
+            offset += len(line) + 1
+        content = Content("\n").join(parts)
         block.set_content(content)
         block.styles.margin = 0
-        if not raw and offset < len(self.source):
-            block.styles.height = 0
         return block
 
 
@@ -352,7 +449,7 @@ def aligned_snapshot(document: RenderMarkdown, editor: TextArea) -> Projection:
     offsets = [0]
     for line in lines:
         offsets.append(offsets[-1] + len(line) + 1)
-    for token in document.source_tokens:
+    for token in ([] if document.controls else document.source_tokens):
         if token.type == "table_open":
             row = token.map[0] + 1
             text = lines[row].replace("|", "┼").replace("-", "─").replace(":", "─")

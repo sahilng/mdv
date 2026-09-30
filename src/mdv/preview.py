@@ -40,6 +40,17 @@ def source_columns(source: str, rendered: str, env: dict | None = None) -> list[
     """
     if source == rendered:
         return list(range(len(source) + 1))
+    # Source and output retain the same paragraph breaks in editing mode.
+    # Match each line independently to avoid quadratic work on repeated prose.
+    source_lines = source.split("\n")
+    rendered_lines = rendered.split("\n")
+    if len(source_lines) > 1 and len(source_lines) == len(rendered_lines):
+        columns = []
+        output_offset = 0
+        for source_line, rendered_line in zip(source_lines, rendered_lines):
+            columns.extend(output_offset + column for column in source_columns(source_line, rendered_line, env))
+            output_offset += len(rendered_line) + 1
+        return columns
     # Repeated words in URLs must never be mistaken for visible text after a
     # link. Mask only syntax the Markdown parser actually recognized as a link.
     if "[" in source:

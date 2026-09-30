@@ -7,6 +7,6 @@
 - [x] restore row-for-row alignment between source and preview in dual-pane edit mode
 - [x] fix the invisible cursor in single-pane live edit mode
 - [x] avoid duplicate bullets, numbered-list markers, and similar rendered markers in single-pane mode when their source control characters are already visible
-- [ ] issue on newline in single-pane edit
-- [ ] editing slow, especially in single-pane and for large documents
-- [ ] HTML not rendered
+- [x] issue on newline in single-pane edit
+- [x] editing slow, especially in single-pane and for large documents
+- [x] HTML not rendered

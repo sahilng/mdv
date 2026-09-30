@@ -10,15 +10,24 @@ from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.widgets import Footer, Header, Markdown, MarkdownViewer, Static, TextArea
 
+from .html import HTMLMarkdown
 from .editor import MarkdownEditor
 from .live import RenderHost
-from .rendered import RenderMarkdown, aligned_snapshot, snapshot
+from .rendered import RenderMarkdown, aligned_snapshot
 from .document import MARKDOWN_SUFFIXES, load_document
 from .preview import AlignedPreview
 from .theme import load_theme, save_theme
 
 
 class DocumentViewer(MarkdownViewer):
+    def compose(self):
+        from textual.widgets._markdown import MarkdownTableOfContents
+
+        markdown = HTMLMarkdown(open_links=False)
+        markdown.can_focus = True
+        yield markdown
+        yield MarkdownTableOfContents(markdown)
+
     async def _on_markdown_link_clicked(self, message: Markdown.LinkClicked) -> None:
         # stop() only prevents bubbling; suppress MarkdownViewer's handler too.
         message.prevent_default()
@@ -87,6 +96,8 @@ class Viewer(App):
         self._preview_running = False
         self._preview_pending = False
         self._render_key = None
+        self._typing_timer = None
+        self._projection_key = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -135,7 +146,7 @@ class Viewer(App):
         host.styles.width = max(10, target.scrollable_content_region.width)
         renderer.set_class(self.live_edit, "controls")
         renderer.controls = self.live_edit
-        renderer.breaks = not self.live_edit
+        renderer.breaks = True
         key = (editor.text, self.live_edit, self.theme)
         # Width-only changes can reflow the existing widget tree.
         if key != self._render_key:
@@ -157,13 +168,14 @@ class Viewer(App):
         if renderer.source != editor.text or renderer.controls != self.live_edit:
             self.schedule_scroll_sync()
             return
-        projection = snapshot(renderer) if self.live_edit else aligned_snapshot(renderer, editor)
-        if self.live_edit:
-            editor.set_projection(projection)
-        else:
-            self.query_one(AlignedPreview).set_projection(projection)
-        if editor.cursor_location == editor.document.end:
-            editor.scroll_cursor_visible()
+        projection_key = (self._render_key, editor.wrap_width, editor.indent_width)
+        if projection_key != self._projection_key:
+            projection = aligned_snapshot(renderer, editor)
+            if self.live_edit:
+                editor.set_projection(projection)
+            else:
+                self.query_one(AlignedPreview).set_projection(projection)
+            self._projection_key = projection_key
         self._refreshing_preview = False
         if not self.live_edit:
             self.sync_scroll(editor, self.query_one(AlignedPreview))
@@ -282,7 +294,9 @@ class Viewer(App):
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         if self.editing:
-            self.schedule_scroll_sync()
+            if self._typing_timer is not None:
+                self._typing_timer.stop()
+            self._typing_timer = self.set_timer(0.12, self.schedule_scroll_sync)
             self.update_editor_status()
 
     def action_save(self) -> None:

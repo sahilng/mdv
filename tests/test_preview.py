@@ -40,3 +40,22 @@ def test_mapping_unicode_tabs_and_escaped_markdown():
         assert len(columns) == len(source) + 1
         assert columns == sorted(columns)
         assert columns[-1] == len(rendered)
+
+
+def test_cached_source_projection_distinguishes_styles():
+    source = "**word**"
+    bold = located(Content("word").stylize("bold"), source, 0, controls=True, breaks=True)
+    italic = located(Content("word").stylize("italic"), source, 0, controls=True, breaks=True)
+    assert any(span.style == "bold" for span in bold.spans)
+    assert any(span.style == "italic" for span in italic.spans)
+    assert not any(span.style == "bold" for span in italic.spans)
+
+
+def test_multiline_mapping_repeated_prose():
+    source = "**word** repeated\n" * 1000
+    rendered = "word repeated\n" * 1000
+    columns = source_columns(source, rendered)
+    assert len(columns) == len(source) + 1
+    assert columns == sorted(columns)
+    for row in (0, 10, 999):
+        assert columns[row * len("**word** repeated\n") + 2] == row * len("word repeated\n")

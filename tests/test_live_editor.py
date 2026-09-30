@@ -27,6 +27,7 @@ def source_style(projection, index):
 
 
 async def settle(app, pilot):
+    await pilot.pause(0.15)
     await app.workers.wait_for_complete()
     await pilot.pause()
     await app.workers.wait_for_complete()
@@ -52,7 +53,7 @@ async def test_live_continuous_navigation_edit_toggle_undo_and_save(tmp_path):
             assert source_style(projection, SOURCE_TEXT.index(marker)).color == Color.parse("#808080")
         assert source_style(projection, SOURCE_TEXT.index("bold")).bold
         assert source_style(projection, SOURCE_TEXT.index("italic")).italic
-        assert projection.offset((3, 0)).y == projection.offset((2, 0)).y
+        assert projection.offset((3, 0)).y > projection.offset((2, 0)).y
         await pilot.press(*(["down"] * (len(projection.rows) + 5)))
         assert editor.cursor_location == editor.document.end
         await pilot.press("T", "a", "i", "l")
@@ -167,7 +168,8 @@ async def test_live_long_code_and_incomplete_markdown(tmp_path):
         await settle(app, pilot)
         editor = app.query_one(MarkdownEditor)
         editor.move_cursor((1, 120))
-        assert editor.scroll_target_x > 0
+        assert editor._cursor_offset.y > 1
+        assert editor._cursor_offset == editor.wrapped_document.location_to_offset((1, 120))
         assert editor.projection.index((1, 120)) in editor.projection.positions
         await pilot.press("Y")
         await settle(app, pilot)
@@ -190,7 +192,7 @@ async def test_live_cursor_overrides_rendered_colors(tmp_path, monkeypatch, them
     async with app.run_test(size=(80, 25)) as pilot:
         await settle(app, pilot)
         editor = app.query_one(MarkdownEditor)
-        editor.cursor_blink = False
+        editor.cursor_blink = True
         for location in ((0, 0), (0, 2), (3, 0), editor.document.end):
             editor.move_cursor(location)
             editor._cursor_visible = True
@@ -269,3 +271,103 @@ async def test_edit_burst_coalesces_and_read_view_updates_on_close(tmp_path, mon
         await pilot.press("ctrl+s", "escape")
         assert reader.source == path.read_text() == editor.text
         assert reader.table_of_contents[0][1] == "Changed"
+
+
+@pytest.mark.parametrize("initial, location", [("one two", (0, 3)), ("", (0, 0)), ("one\n\n\nlast", (1, 0))])
+async def test_live_enter_blank_lines_and_undo(tmp_path, initial, location):
+    path = tmp_path / "newlines.md"
+    path.write_text(initial)
+    app = Viewer(path, live_edit=True)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        editor = app.query_one(MarkdownEditor)
+        editor.move_cursor(location)
+        before = editor.projection.offset(location)
+        await pilot.press("enter")
+        await settle(app, pilot)
+        after = editor.projection.offset(editor.cursor_location)
+        assert after.y > before.y
+        assert editor.projection.at(after.x, after.y) == editor.cursor_location
+        await pilot.press("X")
+        await settle(app, pilot)
+        assert editor.document.lines[location[0] + 1].startswith("X")
+        await pilot.press("ctrl+z")
+        await settle(app, pilot)
+        assert editor.text != initial
+        await pilot.press("ctrl+z")
+        await settle(app, pilot)
+        assert editor.text == initial
+
+
+@pytest.mark.parametrize("live", [False, True])
+async def test_edit_reuses_shifted_suffix_and_updates_source_mapping(tmp_path, live):
+    from textual.widgets._markdown import MarkdownParagraph, MarkdownTable
+
+    path = tmp_path / "reuse.md"
+    path.write_text("First\n\n**Last**\n\n| A | B |\n| - | - |\n| 1 | 2 |\n")
+    app = Viewer(path, start_editing=True, live_edit=live)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        renderer = app.query_one(RenderMarkdown)
+        editor = app.query_one(MarkdownEditor)
+        last = next(block for block in renderer.query(MarkdownParagraph) if "Last" in block._content.plain)
+        table = renderer.query_one(MarkdownTable)
+        editor.insert("new\n", location=(0, 0))
+        await settle(app, pilot)
+        assert next(block for block in renderer.query(MarkdownParagraph) if "Last" in block._content.plain) is last
+        assert renderer.query_one(MarkdownTable) is table
+        assert last.source_range == (3, 4)
+        projection = editor.projection if live else app.query_one(AlignedPreview).projection
+        assert source_style(projection, editor.text.index("Last")).bold
+        assert source_style(projection, editor.text.index("1 | 2"))
+
+
+@pytest.mark.parametrize("source", ["\n\n\n", "text\n\n\n\n", "\n\ntext\n"])
+async def test_live_every_blank_source_row_has_a_cursor_stop(tmp_path, source):
+    path = tmp_path / "blank.md"
+    path.write_text(source)
+    app = Viewer(path, live_edit=True)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        editor = app.query_one(MarkdownEditor)
+        previous = -1
+        for row in range(len(editor.document.lines)):
+            point = editor.projection.offset((row, 0))
+            assert point.y > previous
+            assert editor.projection.at(point.x, point.y) == (row, 0)
+            previous = point.y
+
+
+async def test_cursor_and_source_update_while_markdown_renderer_is_stalled(tmp_path, monkeypatch):
+    import asyncio
+
+    path = tmp_path / 'stalled.md'
+    path.write_text('# Heading\n\nline one\nline two\n\n' + 'paragraph\n\n' * 100)
+    app = Viewer(path, live_edit=True)
+    async with app.run_test(size=(70, 20)) as pilot:
+        await settle(app, pilot)
+        renderer = app.query_one(RenderMarkdown)
+        editor = app.query_one(MarkdownEditor)
+        original = renderer.update
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def stalled(source):
+            entered.set()
+            await release.wait()
+            await original(source)
+
+        monkeypatch.setattr(renderer, 'update', stalled)
+        editor.move_cursor((2, 4))
+        await pilot.press('X')
+        await asyncio.wait_for(entered.wait(), 5)
+        await pilot.press('enter', 'Y', 'left', 'right', 'down', 'up')
+        assert editor.cursor_location == (3, 1)
+        assert editor._cursor_offset == editor.wrapped_document.location_to_offset((3, 1))
+        assert editor.get_line(3).plain == editor.document.lines[3]
+        scroll = editor.scroll_offset
+        cursor = editor._cursor_offset
+        release.set()
+        await settle(app, pilot)
+        assert editor.cursor_location == (3, 1)
+        assert editor._cursor_offset == cursor
+        assert editor.scroll_offset == scroll

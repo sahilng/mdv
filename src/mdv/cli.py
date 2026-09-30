@@ -52,12 +52,13 @@ def main(argv: list[str] | None = None) -> int:
                     sys.stdout.write("\n")
             else:
                 from rich.console import Console
-                from rich.markdown import Markdown
 
                 from .theme import PrintPalette, load_theme
 
+                from .html import PrintMarkdown
+
                 palette = PrintPalette(load_theme())
-                Console(theme=palette.rich_theme()).print(Markdown(content, code_theme=palette))
+                Console(theme=palette.rich_theme()).print(PrintMarkdown(content, code_theme=palette))
         return 0
     except BrokenPipeError:
         return 0

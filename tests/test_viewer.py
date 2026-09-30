@@ -13,6 +13,7 @@ from mdv.document import load_document
 
 
 async def settle_preview(app, pilot):
+    await pilot.pause(0.15)
     # Rendering is queued after layout and no longer blocks Changed messages.
     for _ in range(10):
         await pilot.pause()
