@@ -100,7 +100,10 @@ class AlignedPreview(ScrollView, can_focus=True):
     def set_projection(self, projection) -> None:
         self.projection = projection
         self.rows = projection.rows
-        self.virtual_size = Size(max((row.cell_length for row in self.rows), default=0), len(self.rows))
+        width = getattr(self.rows, "max_width", None)
+        if width is None:
+            width = max((row.cell_length for row in self.rows), default=0)
+        self.virtual_size = Size(width, len(self.rows))
         self.refresh()
 
     def render_line(self, y: int) -> Strip:

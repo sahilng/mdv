@@ -8,6 +8,7 @@ import asyncio
 from functools import lru_cache
 from bisect import bisect_right
 from dataclasses import dataclass, field
+from collections.abc import Sequence
 import re
 
 from rich.cells import cell_len
@@ -423,9 +424,41 @@ class RenderMarkdown(Markdown):
         return block
 
 
+class ProjectedRows(Sequence[Strip]):
+    """Build source metadata strips only for rows actually drawn or inspected."""
+
+    def __init__(self, layouts):
+        self.layouts = layouts
+        self.max_width = max((width for _, _, width in layouts), default=0)
+        self._cache = {}
+
+    def __len__(self):
+        return len(self.layouts)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[row] for row in range(*index.indices(len(self)))]
+        if index < 0:
+            index += len(self)
+        if not 0 <= index < len(self):
+            raise IndexError(index)
+        if index not in self._cache:
+            from rich.style import Style as RichStyle
+            segments, sources, width = self.layouts[index]
+            mapped = []
+            for segment, source in zip(segments, sources):
+                if source is not None and segment.style is not None:
+                    original = segment.style.meta.get(SOURCE)
+                    if original is not None and original != source:
+                        segment = Segment(segment.text, segment.style + RichStyle.from_meta({SOURCE: source}))
+                mapped.append(segment)
+            self._cache[index] = Strip(mapped, width)
+        return self._cache[index]
+
+
 @dataclass
 class Projection:
-    rows: list[Strip] = field(default_factory=list)
+    rows: Sequence[Strip] = field(default_factory=list)
     positions: dict[int, Offset] = field(default_factory=dict)
     source: str = ""
 
@@ -521,17 +554,21 @@ def aligned_snapshot(document: RenderMarkdown, editor: TextArea) -> Projection:
         content = widget.render()
         if not isinstance(content, Content):
             continue
-        mapped = {}
-        for text, style in content.render(widget.visual_style, end="", parse_style=widget._get_style):
-            index = style.meta.get(SOURCE)
-            if index is not None and text != "\n":
-                index += getattr(widget, "_mdv_source_shift", 0)
-                rich_style = style.rich_style
-                if getattr(widget, "_mdv_source_shift", 0):
-                    from rich.style import Style as RichStyle
-                    rich_style = rich_style + RichStyle.from_meta({SOURCE: index})
-                mapped.setdefault(index, []).append(Segment(text, rich_style))
-        glyphs.update(mapped)
+        cached = getattr(widget, "_mdv_glyph_cache", None)
+        visual_style = widget.visual_style
+        if (cached is None or cached[0] is not content or cached[1] != visual_style
+                or cached[2] != document.app.theme):
+            mapped = {}
+            for text, style in content.render(visual_style, end="", parse_style=widget._get_style):
+                index = style.meta.get(SOURCE)
+                if index is not None and text != "\n":
+                    mapped.setdefault(index, []).append(Segment(text, style.rich_style))
+            cached = widget._mdv_glyph_cache = (content, visual_style, document.app.theme, mapped)
+        shift = getattr(widget, "_mdv_source_shift", 0)
+        if shift:
+            glyphs.update((index + shift, segments) for index, segments in cached[3].items())
+        else:
+            glyphs.update(cached[3])
 
     # Syntax-only table separators and rules still occupy their source rows.
     lines = editor.document.lines
@@ -557,7 +594,7 @@ def aligned_snapshot(document: RenderMarkdown, editor: TextArea) -> Projection:
     for line_index, line in enumerate(lines):
         boundaries = [0, *editor.wrapped_document.get_offsets(line_index), len(line)]
         for start, end in zip(boundaries, boundaries[1:]):
-            segments, x = [], 0
+            segments, sources, x = [], [], 0
             for column in range(start, end):
                 index = offsets[line_index] + column
                 positions[index] = Offset(x, len(rows))
@@ -566,20 +603,22 @@ def aligned_snapshot(document: RenderMarkdown, editor: TextArea) -> Projection:
                     if "\t" in text:
                         text = (" " * x + text).expandtabs(editor.indent_width)[x:]
                     segments.append(Segment(text, segment.style))
+                    sources.append(index)
                     x += cell_len(text)
             positions[offsets[line_index] + end] = Offset(x, len(rows))
-            strip = Strip(segments)
             if line_index in headings and len(boundaries) == 2:
                 target_width = (editor.wrap_width if document.controls
                                 else document.region.width)
-                padding = max(0, (target_width - strip.cell_length) // 2)
+                padding = max(0, (target_width - x) // 2)
                 if padding:
-                    strip = Strip.join((Strip.blank(padding, document.rich_style), strip))
+                    segments.insert(0, Segment(" " * padding, document.rich_style))
+                    sources.insert(0, None)
+                    x += padding
                     for column in range(start, end + 1):
                         index = offsets[line_index] + column
                         positions[index] = positions[index] + Offset(padding, 0)
-            rows.append(strip)
-    return Projection(rows, positions, document.source)
+            rows.append((segments, sources, x))
+    return Projection(ProjectedRows(rows), positions, document.source)
 
 
 def styled_source(document: RenderMarkdown, lines: list[str]):

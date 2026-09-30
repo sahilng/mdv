@@ -428,3 +428,35 @@ async def test_live_refresh_skips_character_projection_and_reuses_visual_styles(
         assert editor._styled_lines[-3] is before
         assert block._mdv_visual_cache is cached
         assert editor.get_line(5).plain == editor.document.lines[5]
+
+
+async def test_split_preview_reuses_styles_and_draws_rows_on_demand(tmp_path):
+    from textual.widgets._markdown import MarkdownParagraph
+    from mdv.rendered import ProjectedRows
+
+    path = tmp_path / 'large-preview.md'
+    path.write_text('# Heading\n\nFirst\n\n' + '**unchanged** paragraph\n\n' * 120)
+    app = Viewer(path, start_editing=True)
+    async with app.run_test(size=(80, 20)) as pilot:
+        await settle(app, pilot)
+        editor = app.query_one(MarkdownEditor)
+        preview = app.query_one(AlignedPreview)
+        renderer = app.query_one(RenderMarkdown)
+        block = next(widget for widget in renderer.query(MarkdownParagraph)
+                     if 'unchanged' in widget._content.plain)
+        cache = block._mdv_glyph_cache
+        assert isinstance(preview.rows, ProjectedRows)
+        assert len(preview.rows._cache) < len(preview.rows) // 2
+        editor.insert('prefix\n\n', location=(0, 0))
+        await settle(app, pilot)
+        assert block._mdv_glyph_cache is cache
+        assert len(preview.rows._cache) < len(preview.rows) // 2
+        assert source_style(preview.projection, editor.text.index('unchanged')).bold
+        preview.scroll_to(y=preview.max_scroll_y, animate=False, immediate=True)
+        await pilot.pause()
+        expected = editor.text.rindex('unchanged')
+        bottom = preview.projection.offset(preview.projection.location(expected)).y
+        assert 'unchanged paragraph' in preview.rows[bottom].text
+        # Source metadata follows insertions even for rows first drawn later.
+        assert any(segment.style and segment.style.meta.get(SOURCE) == expected
+                   for segment in preview.rows[bottom])
