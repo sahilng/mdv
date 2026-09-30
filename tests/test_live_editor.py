@@ -371,3 +371,60 @@ async def test_cursor_and_source_update_while_markdown_renderer_is_stalled(tmp_p
         assert editor.cursor_location == (3, 1)
         assert editor._cursor_offset == cursor
         assert editor.scroll_offset == scroll
+
+
+@pytest.mark.parametrize('heading', ['# Centered title', '# 标题', 'Centered title\n=============='])
+async def test_h1_centering_cursor_mouse_selection_and_resize(tmp_path, heading):
+    from rich.cells import cell_len
+
+    path = tmp_path / 'centered.md'
+    path.write_text(heading + '\n\nBody\n\n```python\n# a code comment\n```\n')
+    app = Viewer(path, live_edit=True)
+    async with app.run_test(size=(80, 20)) as pilot:
+        await settle(app, pilot)
+        editor = app.query_one(MarkdownEditor)
+        editor.cursor_blink = False
+        padding = editor.heading_padding(0)
+        assert padding == (editor.wrap_width - cell_len(editor.document.lines[0])) // 2
+        assert padding > 0
+        editor.move_cursor((0, 3))
+        assert editor._cursor_offset.x == padding + cell_len(editor.document.lines[0][:3])
+        assert editor.render_line(0).text.startswith(' ' * padding + editor.document.lines[0])
+        await pilot.click(editor, offset=(padding + cell_len(editor.document.lines[0][:3]), 0))
+        assert editor.cursor_location == (0, 3)
+        await pilot.press('shift+right', 'X')
+        assert editor.cursor_location == (0, 4)
+        assert editor._cursor_offset.x == editor.heading_padding(0) + cell_len(editor.document.lines[0][:4])
+        await settle(app, pilot)
+        assert editor._cursor_offset.x == editor.heading_padding(0) + cell_len(editor.document.lines[0][:4])
+        code_row = editor.document.lines.index('# a code comment')
+        assert editor.heading_padding(code_row) == 0
+        await pilot.resize_terminal(60, 20)
+        await settle(app, pilot)
+        assert editor.heading_padding(0) == (editor.wrap_width - cell_len(editor.document.lines[0])) // 2
+
+
+async def test_live_refresh_skips_character_projection_and_reuses_visual_styles(tmp_path, monkeypatch):
+    import mdv.rendered as rendered
+
+    path = tmp_path / 'fast.md'
+    path.write_text('# Heading\n\nFirst\n\n' + '**unchanged** paragraph\n\n' * 80)
+    app = Viewer(path, live_edit=True)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        editor = app.query_one(MarkdownEditor)
+        renderer = app.query_one(RenderMarkdown)
+        before = editor._styled_lines[-3]
+        from textual.widgets._markdown import MarkdownParagraph
+        block = next(widget for widget in renderer.query(MarkdownParagraph)
+                     if 'unchanged' in widget._content.plain)
+        cached = block._mdv_visual_cache
+        def no_projection(*args):
+            raise AssertionError('Typing must not build character projections')
+        monkeypatch.setattr('mdv.app.aligned_snapshot', no_projection)
+        monkeypatch.setattr('mdv.editor.aligned_snapshot', no_projection)
+        editor.insert('extra\n', location=(2, 0))
+        await settle(app, pilot)
+        assert editor._styled_lines[-3] is before
+        assert block._mdv_visual_cache is cached
+        assert editor.get_line(5).plain == editor.document.lines[5]

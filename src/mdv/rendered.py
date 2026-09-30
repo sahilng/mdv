@@ -72,6 +72,13 @@ def _located(plain, original_spans, source, start, controls, breaks) -> Content:
     return Content(content.plain, spans=spans)
 
 
+class CachedMarkdownFence(MarkdownFence):
+    @classmethod
+    @lru_cache(maxsize=128)
+    def highlight(cls, code, language, ansi=False, dark=False):
+        return super().highlight(code, language, ansi=ansi, dark=dark)
+
+
 class RenderMarkdown(Markdown):
     """Use the normal Markdown blocks, adding source syntax only when requested."""
 
@@ -86,6 +93,11 @@ class RenderMarkdown(Markdown):
         self.controls = controls
         self.breaks = breaks
 
+    def get_block_class(self, token_type):
+        if token_type in {"fence", "code_block"}:
+            return CachedMarkdownFence
+        return super().get_block_class(token_type)
+
     def on_resize(self) -> None:
         # Mounting may finish before the renderer's new height is laid out.
         # Take another projection once its final geometry is available.
@@ -99,6 +111,7 @@ class RenderMarkdown(Markdown):
             tokens = await asyncio.to_thread(parser.parse, markdown, env)
             old = list(self.children)
             previous = getattr(self, "_block_keys", [])
+            previous_source = self.source
             self._markdown = markdown
             self._table_of_contents = None
             self._theme = self.app.theme
@@ -106,9 +119,36 @@ class RenderMarkdown(Markdown):
             offsets = [0]
             for line in lines:
                 offsets.append(offsets[-1] + len(line))
-            blocks = list(self._parse_markdown(tokens))
-            keys = []
             environment = repr(env)
+            prefix_length = 0
+            for before, after in zip(previous_source, markdown):
+                if before != after:
+                    break
+                prefix_length += 1
+            suffix_length = 0
+            for before, after in zip(reversed(previous_source[prefix_length:]),
+                                     reversed(markdown[prefix_length:])):
+                if before != after:
+                    break
+                suffix_length += 1
+            line_delta = markdown.count("\n") - previous_source.count("\n")
+            self._reuse_blocks = {}
+            self._source_lines, self._source_offsets = lines, offsets
+            mode = (self.controls, self.breaks, self.app.theme, environment)
+            for block, key in zip(old, previous):
+                if key[5:] != mode:
+                    continue
+                cls, first, last, start, raw = key[:5]
+                if start + len(raw) <= prefix_length:
+                    new_first, new_last = first, last
+                elif suffix_length and start >= len(previous_source) - suffix_length:
+                    new_first, new_last = first + line_delta, last + line_delta
+                else:
+                    continue
+                self._reuse_blocks[(cls, new_first, new_last, raw)] = (block, start)
+            blocks = list(self._parse_markdown(tokens))
+            self._reuse_blocks.clear()
+            keys = []
             for block in blocks:
                 first, last = block.source_range
                 keys.append((type(block), first, last, offsets[min(first, len(lines))],
@@ -142,14 +182,22 @@ class RenderMarkdown(Markdown):
             self.post_message(Markdown.TableOfContentsUpdated(self, self.table_of_contents))
 
     def _update_block(self, existing, replacement):
+        if existing is replacement:
+            return
         existing.source_range = replacement.source_range
         existing._token = replacement._token
         existing._inline_token = replacement._inline_token
-        existing.set_content(replacement._content)
+        def first_source(content):
+            return next((span.style.meta[SOURCE] for span in content.spans
+                         if isinstance(span.style, Style) and SOURCE in span.style.meta), 0)
+
+        # These blocks have identical source and visual styles. Retain their
+        # rendered content and adjust only its source origin after earlier edits.
+        existing._mdv_source_shift = first_source(replacement._content) - first_source(existing._content)
         if isinstance(existing, MarkdownFence):
-            existing._highlighted_code = replacement._highlighted_code
-            existing._mdv_content = replacement._mdv_content
-            existing.set_content(replacement._mdv_content)
+            shift = first_source(replacement._mdv_content) - first_source(existing._mdv_content)
+            for child in existing.walk_children():
+                child._mdv_source_shift = shift
         def mounted_blocks(widget):
             for child in widget.children:
                 if isinstance(child, MarkdownBlock):
@@ -167,8 +215,37 @@ class RenderMarkdown(Markdown):
             self._update_block(child, updated)
         if isinstance(existing, MarkdownTable):
             headers, rows = existing._get_headers_and_rows()
-            existing._headers, existing._rows = headers, rows
-            existing.query_one(MarkdownTableContent)._update_content(headers, rows)
+            updated_headers, updated_rows = replacement._get_headers_and_rows()
+            old_cells = [*headers, *[cell for row in rows for cell in row]]
+            updated_cells = [*updated_headers, *[cell for row in updated_rows for cell in row]]
+            table = existing.query_one(MarkdownTableContent)
+            for cell, old, new in zip(table.children, old_cells, updated_cells):
+                cell._mdv_source_shift = first_source(new) - first_source(old)
+
+    def _reuse_block(self, cls, first, last):
+        raw = "".join(self._source_lines[first:last])
+        cached = self._reuse_blocks.pop((cls, first, last, raw), None)
+        if cached is None:
+            return None
+        block, old_start = cached
+        row_delta = first - block.source_range[0]
+        character_delta = self._source_offsets[min(first, len(self._source_lines))] - old_start
+        seen = set()
+
+        def shift(widget):
+            if id(widget) in seen:
+                return
+            seen.add(id(widget))
+            widget._mdv_source_shift = getattr(widget, "_mdv_source_shift", 0) + character_delta
+            if isinstance(widget, MarkdownBlock):
+                a, b = widget.source_range
+                widget.source_range = (a + row_delta, b + row_delta)
+                for child in widget._blocks:
+                    shift(child)
+            for child in widget.children:
+                shift(child)
+        shift(block)
+        return block
 
     def _parse_markdown(self, tokens):
         tokens = list(tokens)
@@ -316,7 +393,11 @@ class RenderMarkdown(Markdown):
                 spacer = self.syntax_block("", offsets[consumed], consumed, first)
                 spacer.styles.height = first - consumed - 1
                 yield spacer
-            decorate(block)
+            reused = self._reuse_block(type(block), first, last)
+            if reused is None:
+                decorate(block)
+            else:
+                block = reused
             yield block
             if self.controls and block._token.type == "heading_open" and last > first + 1:
                 yield self.syntax_block(lines[last - 1].rstrip("\r\n"), offsets[last - 1], last - 1, last)
@@ -325,6 +406,9 @@ class RenderMarkdown(Markdown):
             yield self.syntax_block("".join(lines[consumed:]), offsets[consumed], consumed, len(lines))
 
     def syntax_block(self, raw: str, offset: int, first: int, last: int):
+        reused = self._reuse_block(MarkdownParagraph, first, last)
+        if reused is not None:
+            return reused
         token = Token("paragraph_open", "p", 1)
         token.map = [first, last]
         block = MarkdownParagraph(self, token)
@@ -441,7 +525,12 @@ def aligned_snapshot(document: RenderMarkdown, editor: TextArea) -> Projection:
         for text, style in content.render(widget.visual_style, end="", parse_style=widget._get_style):
             index = style.meta.get(SOURCE)
             if index is not None and text != "\n":
-                mapped.setdefault(index, []).append(Segment(text, style.rich_style))
+                index += getattr(widget, "_mdv_source_shift", 0)
+                rich_style = style.rich_style
+                if getattr(widget, "_mdv_source_shift", 0):
+                    from rich.style import Style as RichStyle
+                    rich_style = rich_style + RichStyle.from_meta({SOURCE: index})
+                mapped.setdefault(index, []).append(Segment(text, rich_style))
         glyphs.update(mapped)
 
     # Syntax-only table separators and rules still occupy their source rows.
@@ -463,6 +552,8 @@ def aligned_snapshot(document: RenderMarkdown, editor: TextArea) -> Projection:
             glyphs[index] = [Segment(char, document.rich_style)]
 
     rows, positions = [], {}
+    headings = {token.map[0] for token in document.source_tokens
+                if token.type == "heading_open" and token.tag == "h1" and token.map}
     for line_index, line in enumerate(lines):
         boundaries = [0, *editor.wrapped_document.get_offsets(line_index), len(line)]
         for start, end in zip(boundaries, boundaries[1:]):
@@ -477,5 +568,74 @@ def aligned_snapshot(document: RenderMarkdown, editor: TextArea) -> Projection:
                     segments.append(Segment(text, segment.style))
                     x += cell_len(text)
             positions[offsets[line_index] + end] = Offset(x, len(rows))
-            rows.append(Strip(segments))
+            strip = Strip(segments)
+            if line_index in headings and len(boundaries) == 2:
+                target_width = (editor.wrap_width if document.controls
+                                else document.region.width)
+                padding = max(0, (target_width - strip.cell_length) // 2)
+                if padding:
+                    strip = Strip.join((Strip.blank(padding, document.rich_style), strip))
+                    for column in range(start, end + 1):
+                        index = offsets[line_index] + column
+                        positions[index] = positions[index] + Offset(padding, 0)
+            rows.append(strip)
     return Projection(rows, positions, document.source)
+
+
+def styled_source(document: RenderMarkdown, lines: list[str]):
+    """Read visual style runs directly, without rendering source metadata cells."""
+    from rich.text import Text
+
+    length = sum(len(line) + 1 for line in lines)
+    cells = [None] * length
+    for widget in document.walk_children():
+        content = widget.render()
+        if not isinstance(content, Content):
+            continue
+        visual_spans = []
+        source_spans = []
+        for span in content.spans:
+            if isinstance(span.style, Style) and SOURCE in span.style.meta:
+                source_spans.append(span)
+            else:
+                visual_spans.append(span)
+        if not source_spans:
+            continue
+        key = (content.plain, tuple(visual_spans), widget.visual_style, document.app.theme)
+        cached = getattr(widget, "_mdv_visual_cache", None)
+        if cached is None or cached[0] != key:
+            styles = []
+            for text, style in Content(content.plain, spans=visual_spans).render(
+                    widget.visual_style, end="", parse_style=widget._get_style):
+                styles.extend([style.rich_style.clear_meta_and_links()] * len(text))
+            cached = widget._mdv_visual_cache = (key, styles)
+        styles = cached[1]
+        shift = getattr(widget, "_mdv_source_shift", 0)
+        for span in source_spans:
+            index = span.style.meta[SOURCE] + shift
+            if 0 <= index < length and span.start < len(styles):
+                cells[index] = styles[span.start]
+    result = []
+    offset = 0
+    cache = getattr(document, "_mdv_line_styles", {})
+    for line in lines:
+        runs = []
+        start = 0
+        active = cells[offset] if line else None
+        for column in range(1, len(line) + 1):
+            style = cells[offset + column] if column < len(line) else None
+            if style != active or column == len(line):
+                if active is not None:
+                    runs.append((start, column, active))
+                start, active = column, style
+        key = (line, tuple(runs))
+        styled = cache.get(key)
+        if styled is None:
+            styled = Text(line, end="", no_wrap=True)
+            for start, end, style in runs:
+                styled.stylize(style, start, end)
+            cache[key] = styled
+        result.append(styled)
+        offset += len(line) + 1
+    document._mdv_line_styles = cache if len(cache) < 2048 else {}
+    return result

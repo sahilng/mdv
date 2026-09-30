@@ -13,7 +13,7 @@ from textual.widgets import Footer, Header, Markdown, MarkdownViewer, Static, Te
 from .html import HTMLMarkdown
 from .editor import MarkdownEditor
 from .live import RenderHost
-from .rendered import RenderMarkdown, aligned_snapshot
+from .rendered import RenderMarkdown, aligned_snapshot, styled_source
 from .document import MARKDOWN_SUFFIXES, load_document
 from .preview import AlignedPreview
 from .theme import load_theme, save_theme
@@ -153,8 +153,10 @@ class Viewer(App):
             await renderer.update(editor.text)
             self._render_key = key
         for block in renderer.query("MarkdownFence"):
-            if hasattr(block, "_mdv_content"):
-                block.set_content(block._mdv_content)
+            content = getattr(block, "_mdv_content", None)
+            if content is not None and getattr(block, "_mdv_content_applied", None) is not content:
+                block.set_content(content)
+                block._mdv_content_applied = content
         self.call_after_refresh(self.finish_projection, generation)
 
     def finish_projection(self, generation: int) -> None:
@@ -170,11 +172,10 @@ class Viewer(App):
             return
         projection_key = (self._render_key, editor.wrap_width, editor.indent_width)
         if projection_key != self._projection_key:
-            projection = aligned_snapshot(renderer, editor)
             if self.live_edit:
-                editor.set_projection(projection)
+                editor.set_styles(styled_source(renderer, editor.document.lines), renderer)
             else:
-                self.query_one(AlignedPreview).set_projection(projection)
+                self.query_one(AlignedPreview).set_projection(aligned_snapshot(renderer, editor))
             self._projection_key = projection_key
         self._refreshing_preview = False
         if not self.live_edit:

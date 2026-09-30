@@ -67,7 +67,8 @@ Tables use source-aligned rows, and scrolling either pane keeps the rows togethe
 Press `Ctrl+L` while editing to toggle a single-pane live editor, or start there
 with `--live-edit`. The whole document stays rendered, including the text being
 edited, with Markdown syntax visible in gray throughout. Newlines and blank
-lines remain visible and editable. Source list markers,
+lines remain visible and editable. H1 headings stay centered in live mode and
+in the split preview. Source list markers,
 quote markers, and rules appear once, without duplicate rendered markers. Arrow keys, selection,
 undo, and redo work across the entire document; `Ctrl+Home` / `Ctrl+End` jump to
 the start / end. Long code lines wrap with the source. Both edit modes follow the
