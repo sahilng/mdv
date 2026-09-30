@@ -4,6 +4,6 @@
 - [x] don't open mdv if file doesn't exist yet, show error without opening (and add hint to use mde if want to write new file)
 - [x] add single-pane live-rendered edit mode with Markdown control characters in gray
 - [x] use continuous live editing with gray syntax throughout; match read rendering and theme in both edit modes
-- [ ] restore row-for-row alignment between source and preview in dual-pane edit mode
-- [ ] fix the invisible cursor in single-pane live edit mode
-- [ ] avoid duplicate bullets, numbered-list markers, and similar rendered markers in single-pane mode when their source control characters are already visible
+- [x] restore row-for-row alignment between source and preview in dual-pane edit mode
+- [x] fix the invisible cursor in single-pane live edit mode
+- [x] avoid duplicate bullets, numbered-list markers, and similar rendered markers in single-pane mode when their source control characters are already visible

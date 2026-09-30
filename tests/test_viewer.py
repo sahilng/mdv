@@ -7,6 +7,7 @@ from textual.widgets import Markdown, MarkdownViewer, Static, TextArea
 
 from mdv.app import Viewer
 from mdv.preview import AlignedPreview
+from mdv.rendered import SOURCE
 from mdv.cli import main
 from mdv.document import load_document
 
@@ -217,7 +218,10 @@ async def test_preview_rows_align_with_source(tmp_path):
         "- First item\n- Second item\n\n"
         "```python\nprint('hello')\n```\n\n"
         "| A | B |\n| - | - |\n| 1 | 2 |\n\n"
-        "## Last\n\n" + "Tail paragraph\n\n" * 30
+        "## Last\n\n"
+        "[repeat](https://example.com/repeat/repeat)repeat " + "你好 **world** " * 20
+        + "\n\n```python\nvalue = '\t" + "long" * 45 + "'\n```\n\n"
+        + "Tail paragraph\n\n" * 30
     )
     path = tmp_path / "blocks.md"
     path.write_text(source)
@@ -230,8 +234,21 @@ async def test_preview_rows_align_with_source(tmp_path):
 
         async def check_alignment():
             assert preview.content_region.y == editor.content_region.y
-            # Native block margins and table borders consume rendered rows;
-            # scrolling follows source positions rather than equal row counts.
+            assert len(preview.rows) == editor.wrapped_document.height
+            for row_index, strip in enumerate(preview.rows):
+                for segment in strip:
+                    index = segment.style.meta.get(SOURCE) if segment.style else None
+                    if index is not None:
+                        location = preview.projection.location(index)
+                        assert editor.wrapped_document.location_to_offset(location).y == row_index
+            text = "".join(row.text for row in preview.rows)
+            assert text.count("repeat") == 2
+            assert "https://example.com" not in text
+            assert "long" * 45 in text
+            assert text.count("你好") == 20
+            for line_index, line in enumerate(editor.document.lines):
+                for column in range(len(line) + 1):
+                    assert preview.projection.offset((line_index, column)).y == editor.wrapped_document.location_to_offset((line_index, column)).y
             for line_index, source_line in enumerate(editor.document.lines):
                 for marker in ("First", "Middle", "continued", "Another", "Second", "print", "Last"):
                     if marker in source_line:
@@ -240,10 +257,10 @@ async def test_preview_rows_align_with_source(tmp_path):
             continuation = editor.document.lines.index("continued **bold** text")
             assert preview.projection.offset((continuation, 0)).y > preview.projection.offset((continuation - 1, 0)).y
             for source_pane, target in ((editor, preview), (preview, editor)):
-                for fraction in (0, 1):
+                for fraction in (0, 0.37, 1):
                     source_pane.scroll_to(y=int(source_pane.max_scroll_y * fraction), animate=False, immediate=True)
                     await pilot.pause()
-                    assert target.scroll_y == target.max_scroll_y * fraction
+                    assert target.scroll_y == source_pane.scroll_y
 
         await check_alignment()
         await pilot.resize_terminal(61, 24)

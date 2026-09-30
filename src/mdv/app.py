@@ -8,12 +8,11 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
-from textual.geometry import Offset
 from textual.widgets import Footer, Header, Markdown, MarkdownViewer, Static, TextArea
 
 from .editor import MarkdownEditor
 from .live import RenderHost
-from .rendered import RenderMarkdown, snapshot
+from .rendered import RenderMarkdown, aligned_snapshot, snapshot
 from .document import MARKDOWN_SUFFIXES, load_document
 from .preview import AlignedPreview
 from .theme import load_theme, save_theme
@@ -109,21 +108,7 @@ class Viewer(App):
             return
         self._syncing_scroll = True
         try:
-            preview = self.query_one(AlignedPreview)
-            editor = self.query_one("#editor", MarkdownEditor)
-            if preview.projection is None:
-                return
-            if source.scroll_y <= 0:
-                y = 0
-            elif source.max_scroll_y and source.scroll_y >= source.max_scroll_y:
-                y = target.max_scroll_y
-            elif source is editor:
-                location = editor.wrapped_document.offset_to_location(Offset(0, int(source.scroll_y)))
-                y = preview.projection.offset(location).y
-            else:
-                location = preview.projection.at(0, int(source.scroll_y))
-                y = editor.wrapped_document.location_to_offset(location).y
-            target.scroll_to(y=y, animate=False, immediate=True)
+            target.scroll_to(y=source.scroll_y, animate=False, immediate=True)
         finally:
             self._syncing_scroll = False
 
@@ -139,6 +124,7 @@ class Viewer(App):
         renderer = self.query_one(RenderMarkdown)
         target = editor if self.live_edit else preview
         host.styles.width = max(10, target.scrollable_content_region.width)
+        renderer.set_class(self.live_edit, "controls")
         renderer.controls = self.live_edit
         renderer.breaks = not self.live_edit
         await renderer.update(editor.text)
@@ -154,7 +140,7 @@ class Viewer(App):
         editor = self.query_one("#editor", MarkdownEditor)
         if renderer.source != editor.text or renderer.controls != self.live_edit:
             return
-        projection = snapshot(renderer)
+        projection = snapshot(renderer) if self.live_edit else aligned_snapshot(renderer, editor)
         if self.live_edit:
             editor.set_projection(projection)
         else:

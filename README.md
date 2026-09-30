@@ -56,13 +56,14 @@ Heading links navigate within the document; other links display their destinatio
 
 Press `e` on a Markdown file to edit its source in the left pane with a live
 preview on the right. Use `Ctrl+S` to save, `Ctrl+Q` to quit directly, and `Esc`
-to return to reading. The preview uses the same headings, tables, code highlighting,
-spacing, and theme as read mode, while preserving source line breaks. Scrolling
-either pane follows the corresponding source position in the other pane.
+to return to reading. The preview preserves read-mode text styles, code highlighting, and theme,
+while aligning each row with the source, including wrapped lines and blank lines.
+Tables use source-aligned rows, and scrolling either pane keeps the rows together.
 
 Press `Ctrl+L` while editing to toggle a single-pane live editor, or start there
 with `--live-edit`. The whole document stays rendered, including the text being
-edited, with Markdown syntax visible in gray throughout. Arrow keys, selection,
+edited, with Markdown syntax visible in gray throughout. Source list markers,
+quote markers, and rules appear once, without duplicate rendered markers. Arrow keys, selection,
 undo, and redo work across the entire document; `Ctrl+Home` / `Ctrl+End` jump to
 the start / end. Long code lines scroll horizontally. Both edit modes follow the
 selected read-view theme, including changes made while editing.

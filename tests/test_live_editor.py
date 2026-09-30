@@ -177,3 +177,53 @@ async def test_live_long_code_and_incomplete_markdown(tmp_path):
         await settle(app, pilot)
         editor.move_cursor(editor.document.end)
         assert editor.projection.index(editor.document.end) in editor.projection.positions
+
+
+@pytest.mark.parametrize("theme", ["textual-dark", "textual-light", "nord"])
+async def test_live_cursor_overrides_rendered_colors(tmp_path, monkeypatch, theme):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr("mdv.app.save_theme", lambda _: None)
+    path = tmp_path / "cursor.md"
+    path.write_text("# Heading\n\n```python\nx = 1\n```\n")
+    app = Viewer(path, live_edit=True)
+    app.theme = theme
+    async with app.run_test(size=(80, 25)) as pilot:
+        await settle(app, pilot)
+        editor = app.query_one(MarkdownEditor)
+        editor.cursor_blink = False
+        for location in ((0, 0), (0, 2), (3, 0), editor.document.end):
+            editor.move_cursor(location)
+            editor._cursor_visible = True
+            point = editor.projection.offset(location) - editor.scroll_offset
+            strip = editor.render_line(point.y)
+            style = next(iter(strip.crop(point.x, point.x + 1))).style
+            assert style.color == editor._theme.cursor_style.color
+            assert style.bgcolor == editor._theme.cursor_style.bgcolor
+            editor._cursor_visible = False
+            hidden = next(iter(editor.render_line(point.y).crop(point.x, point.x + 1))).style
+            assert (hidden.color, hidden.bgcolor) != (style.color, style.bgcolor)
+
+
+async def test_live_markers_appear_once_and_survive_toggling(tmp_path):
+    source = "- apple\n  - nested\n\n3. third\n4. fourth\n\n> quote\n>\n> ---\n\n---\n"
+    path = tmp_path / "markers.md"
+    path.write_text(source)
+    app = Viewer(path, live_edit=True)
+    async with app.run_test(size=(80, 30)) as pilot:
+        await settle(app, pilot)
+        editor = app.query_one(MarkdownEditor)
+        for _ in range(2):
+            text = "\n".join(row.text for row in editor.projection.rows)
+            for line in ("- apple", "- nested", "3. third", "4. fourth", "> quote", "> ---"):
+                assert text.count(line) == 1
+            assert "●" not in text and "•" not in text
+            assert "│" not in text and "━" not in text and "─" not in text
+            for index, char in enumerate(source):
+                if not char.isspace():
+                    assert index in editor.projection.positions
+            await pilot.press("ctrl+l")
+            await settle(app, pilot)
+            preview = app.query_one(AlignedPreview)
+            assert "• apple" in "\n".join(row.text for row in preview.rows)
+            await pilot.press("ctrl+l")
+            await settle(app, pilot)

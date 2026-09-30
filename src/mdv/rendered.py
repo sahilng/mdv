@@ -9,12 +9,13 @@ from dataclasses import dataclass, field
 import re
 
 from rich.cells import cell_len
+from rich.segment import Segment
 from textual.content import Content, Span
 from textual.geometry import Offset, Region
 from textual.strip import Strip
 from textual.style import Style
-from textual.widgets import Markdown
-from textual.widgets._markdown import MarkdownBlock, MarkdownFence, MarkdownParagraph
+from textual.widgets import Markdown, TextArea
+from textual.widgets._markdown import MarkdownFence, MarkdownParagraph
 from markdown_it.token import Token
 
 from .preview import source_columns
@@ -62,6 +63,12 @@ def located(content: Content, source: str, start: int, *, controls: bool, breaks
 class RenderMarkdown(Markdown):
     """Use the normal Markdown blocks, adding source syntax only when requested."""
 
+    DEFAULT_CSS = """
+    RenderMarkdown.controls MarkdownBullet { display: none; }
+    RenderMarkdown.controls MarkdownBlockQuote { border-left: none; padding: 0; }
+    RenderMarkdown.controls MarkdownTableContent { keyline: none; }
+    """
+
     def __init__(self, *, controls: bool = False, breaks: bool = False, **kwargs):
         super().__init__("", open_links=False, **kwargs)
         self.controls = controls
@@ -69,6 +76,7 @@ class RenderMarkdown(Markdown):
 
     def _parse_markdown(self, tokens):
         tokens = list(tokens)
+        self.source_tokens = tokens
         lines = self.source.splitlines(keepends=True)
         offsets = [0]
         for line in lines:
@@ -95,8 +103,8 @@ class RenderMarkdown(Markdown):
                     cell_column = raw.index("|") + 1
                 match = re.search(r"(?<!\\)\|", raw[cell_column:])
                 end = cell_column + match.start() if match else len(raw)
-                first = 0 if self.controls and cell_index == 0 else cell_column
-                last = min(len(raw), end + 1) if self.controls else end
+                first = 0 if cell_index == 0 else cell_column
+                last = min(len(raw), end + 1)
                 token.meta["source_slice"] = (offsets[row] + first, raw[first:last])
                 if self.controls and table_header and row + 1 < len(lines):
                     separator = lines[row + 1].rstrip("\r\n")
@@ -123,7 +131,27 @@ class RenderMarkdown(Markdown):
                     raw = "".join(lines[first:last]).rstrip("\r\n")
                 else:
                     start, raw = 0, inline.content
-                content = located(block._content, raw, start, controls=self.controls, breaks=self.breaks)
+                rendered = block._content
+                if not self.controls:
+                    if "source_slice" in inline.meta:
+                        # Keep table cell separators on the source row.
+                        leading = "│" if raw.startswith("|") else ""
+                        trailing = "│" if raw.endswith("|") else ""
+                        inner = raw[int(bool(leading)):len(raw) - int(bool(trailing))]
+                        left = len(inner) - len(inner.lstrip())
+                        right = len(inner) - len(inner.rstrip())
+                        rendered = Content(leading + " " * left) + rendered + " " * right + trailing
+                    else:
+                        raw_lines = raw.split("\n")
+                        parts = rendered.split("\n", allow_blank=True)
+                        if len(parts) == len(raw_lines):
+                            decorated = []
+                            for source_line, part in zip(raw_lines, parts):
+                                prefix = re.match(r"^(\s*(?:>\s*)*)(?:(?:[-+*]|\d+[.)])\s+)?", source_line).group()
+                                prefix = re.sub(r"[-+*](?=\s)", "•", prefix).replace(">", "│")
+                                decorated.append(Content(prefix) + part)
+                            rendered = Content("\n").join(decorated)
+                content = located(rendered, raw, start, controls=self.controls, breaks=self.breaks)
                 if "separator_slice" in inline.meta:
                     separator_start, separator = inline.meta["separator_slice"]
                     content += "\n" + located(Content(), separator, separator_start, controls=True, breaks=True)
@@ -147,9 +175,43 @@ class RenderMarkdown(Markdown):
                 block._mdv_content = content
             for child in block._blocks:
                 decorate(child)
+            if self.controls and block._token.type == "blockquote_open":
+                # Quote-only lines have syntax even when the parser omits them.
+                children = []
+                consumed = block.source_range[0]
+                for child in block._blocks:
+                    first, last = child.source_range
+                    if first > consumed:
+                        children.append(self.syntax_block(
+                            "".join(lines[consumed:first]).rstrip("\r\n"),
+                            offsets[consumed], consumed, first))
+                    children.append(child)
+                    consumed = max(consumed, last)
+                last = block.source_range[1]
+                if consumed < last:
+                    children.append(self.syntax_block(
+                        "".join(lines[consumed:last]).rstrip("\r\n"),
+                        offsets[consumed], consumed, last))
+                block._blocks = children
+
+        def layout_tokens():
+            for token in tokens:
+                if self.controls and token.type == "hr":
+                    # The native renderer yields rules outside the container
+                    # stack. A syntax paragraph keeps nested rules in order.
+                    opening = Token("paragraph_open", "p", 1)
+                    opening.map = token.map
+                    inline = Token("inline", "", 0)
+                    inline.map = token.map
+                    inline.children = []
+                    yield opening
+                    yield inline
+                    yield Token("paragraph_close", "p", -1)
+                else:
+                    yield token
 
         consumed = 0
-        for block in super()._parse_markdown(tokens):
+        for block in super()._parse_markdown(layout_tokens()):
             first, last = block.source_range
             if self.controls and first > consumed:
                 # Whitespace and reference definitions are editable too.
@@ -160,9 +222,7 @@ class RenderMarkdown(Markdown):
                 yield spacer
             decorate(block)
             yield block
-            if self.controls and block._token.type == "hr":
-                yield self.syntax_block(lines[first].rstrip("\r\n"), offsets[first], first, last)
-            elif self.controls and block._token.type == "heading_open" and last > first + 1:
+            if self.controls and block._token.type == "heading_open" and last > first + 1:
                 yield self.syntax_block(lines[last - 1].rstrip("\r\n"), offsets[last - 1], last - 1, last)
             consumed = max(consumed, last)
         if self.controls and (consumed < len(lines) or not tokens or self.source.endswith("\n")):
@@ -266,4 +326,59 @@ def snapshot(document: RenderMarkdown) -> Projection:
         if index not in positions and index - 1 in positions:
             previous = positions[index - 1]
             positions[index] = Offset(min(width - 1, previous.x + max(1, cell_len(document.source[index - 1:index]))), previous.y)
+    return Projection(rows, positions, document.source)
+
+
+def aligned_snapshot(document: RenderMarkdown, editor: TextArea) -> Projection:
+    """Lay out the shared renderer's styled content on the source wrap rows.
+
+    Read-mode margins, borders and wrapping cannot add rows here. Read the
+    unwrapped content so even text clipped by a narrow table remains available.
+    """
+    glyphs = {}
+    for widget in document.walk_children():
+        content = widget.render()
+        if not isinstance(content, Content):
+            continue
+        mapped = {}
+        for text, style in content.render(widget.visual_style, end="", parse_style=widget._get_style):
+            index = style.meta.get(SOURCE)
+            if index is not None and text != "\n":
+                mapped.setdefault(index, []).append(Segment(text, style.rich_style))
+        glyphs.update(mapped)
+
+    # Syntax-only table separators and rules still occupy their source rows.
+    lines = editor.document.lines
+    offsets = [0]
+    for line in lines:
+        offsets.append(offsets[-1] + len(line) + 1)
+    for token in document.source_tokens:
+        if token.type == "table_open":
+            row = token.map[0] + 1
+            text = lines[row].replace("|", "┼").replace("-", "─").replace(":", "─")
+        elif token.type == "hr":
+            row = token.map[0]
+            text = "─" * len(lines[row])
+        else:
+            continue
+        for column, char in enumerate(text):
+            index = offsets[row] + column
+            glyphs[index] = [Segment(char, document.rich_style)]
+
+    rows, positions = [], {}
+    for line_index, line in enumerate(lines):
+        boundaries = [0, *editor.wrapped_document.get_offsets(line_index), len(line)]
+        for start, end in zip(boundaries, boundaries[1:]):
+            segments, x = [], 0
+            for column in range(start, end):
+                index = offsets[line_index] + column
+                positions[index] = Offset(x, len(rows))
+                for segment in glyphs.get(index, []):
+                    text = segment.text.replace("\n", " ")
+                    if "\t" in text:
+                        text = (" " * x + text).expandtabs(editor.indent_width)[x:]
+                    segments.append(Segment(text, segment.style))
+                    x += cell_len(text)
+            positions[offsets[line_index] + end] = Offset(x, len(rows))
+            rows.append(Strip(segments))
     return Projection(rows, positions, document.source)

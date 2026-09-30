@@ -133,6 +133,8 @@ class MarkdownEditor(TextArea):
         cursor = self.projection.offset(self.cursor_location) - Offset(self.scroll_offset.x, 0)
         if self.has_focus and self._cursor_visible and row == cursor.y and 0 <= cursor.x < width:
             strip = Strip.join((strip.crop(0, cursor.x),
-                                strip.crop(cursor.x, cursor.x + 1).apply_style(self._theme.cursor_style or Style(reverse=True)),
+                                Strip(Segment(segment.text, (segment.style or Style()) +
+                                              (self._theme.cursor_style or Style(reverse=True)))
+                                      for segment in strip.crop(cursor.x, cursor.x + 1)),
                                 strip.crop(cursor.x + 1, width)))
         return strip
