@@ -1,5 +1,6 @@
 """Translate embedded HTML to terminal-friendly Markdown without changing source."""
 
+import asyncio
 from html.parser import HTMLParser
 from collections import OrderedDict
 from copy import deepcopy
@@ -11,6 +12,7 @@ from markdown_it.token import Token
 from markdownify import markdownify
 from bs4 import BeautifulSoup
 from rich.markdown import Markdown as RichMarkdown
+from textual.await_complete import AwaitComplete
 
 
 class InlineHTML(HTMLParser):
@@ -223,6 +225,16 @@ class HTMLMarkdown(Markdown):
     def __init__(self, *args, **kwargs):
         kwargs["parser_factory"] = lambda: HTMLMarkdownParser(details=True)
         super().__init__(*args, **kwargs)
+
+    def update(self, markdown: str) -> AwaitComplete:
+        # MarkdownViewer updates its initially empty document during mount.
+        # Textual's empty update awaits removal of an empty node list, which
+        # can hold up the parent's mount (and the whole viewer startup).
+        if not markdown and not self.source and not self.children:
+            self._markdown = ""
+            self._table_of_contents = None
+            return AwaitComplete(asyncio.sleep(0))
+        return super().update(markdown)
 
     def _parse_markdown(self, tokens):
         tokens = list(tokens)

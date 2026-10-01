@@ -98,6 +98,8 @@ class Viewer(App):
         self._render_key = None
         self._typing_timer = None
         self._projection_key = None
+        self._saved_lines: list[str] = []
+        self._editor_status: str | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -261,7 +263,7 @@ class Viewer(App):
 
     @property
     def dirty(self) -> bool:
-        return self.editing and self.query_one("#editor", TextArea).text != self.content
+        return self.editing and self.query_one("#editor", TextArea).document.lines != self._saved_lines
 
     def action_edit(self) -> None:
         if self.content is None:
@@ -278,6 +280,7 @@ class Viewer(App):
         self.screen.set_class(self.live_edit, "live-edit")
         self.query_one("#editor", MarkdownEditor).set_live_render(self.live_edit)
         editor.load_text(self.content)
+        self._saved_lines = editor.document.lines.copy()
         editor.focus()
         self.schedule_scroll_sync()
         self.update_editor_status()
@@ -294,9 +297,11 @@ class Viewer(App):
 
     def update_editor_status(self) -> None:
         marker = "Unsaved changes" if self.dirty else ("Saved" if self.path.exists() else "New file")
-        self.query_one("#status", Static).update(
-            f"{self.path}  ·  {marker}  ·  Ctrl+L live/split · Ctrl+S save · Ctrl+Q quit · Esc read · Ctrl+D discard"
-        )
+        status = (f"{self.path}  ·  {marker}  ·  Ctrl+L live/split · Ctrl+S save "
+                  "· Ctrl+Q quit · Esc read · Ctrl+D discard")
+        if status != self._editor_status:
+            self._editor_status = status
+            self.query_one("#status", Static).update(status)
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         if self.editing:
@@ -317,6 +322,7 @@ class Viewer(App):
             self.notify(str(error), title="Unable to save", severity="error", markup=False)
             return
         self.content = content
+        self._saved_lines = self.query_one("#editor", TextArea).document.lines.copy()
         self.update_editor_status()
 
     async def action_close_editor(self) -> None:
@@ -324,6 +330,7 @@ class Viewer(App):
             self.notify("Save with Ctrl+S or discard with Ctrl+D before leaving the editor.")
             return
         self.editing = False
+        self._editor_status = None
         self.screen.remove_class("editing")
         viewer = self.query_one(MarkdownViewer)
         # Keep the hidden read view out of the typing path.

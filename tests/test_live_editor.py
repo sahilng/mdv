@@ -59,6 +59,7 @@ async def test_live_continuous_navigation_edit_toggle_undo_and_save(tmp_path):
         await pilot.press("T", "a", "i", "l")
         await settle(app, pilot)
         assert editor.text == SOURCE_TEXT + "Tail"
+        assert app.dirty
         assert "Tail" in "\n".join(row.text for row in editor.projection.rows)
         await pilot.press("ctrl+l")
         await settle(app, pilot)
@@ -69,6 +70,7 @@ async def test_live_continuous_navigation_edit_toggle_undo_and_save(tmp_path):
         await pilot.press("ctrl+z")
         await settle(app, pilot)
         assert editor.text == SOURCE_TEXT
+        assert not app.dirty
         await pilot.press("ctrl+y", "ctrl+s", "escape")
         assert path.read_text() == SOURCE_TEXT + "Tail"
         assert not app.editing
