@@ -55,6 +55,7 @@ def test_print_cli_uses_selected_theme(tmp_path, monkeypatch):
     output = Terminal()
     monkeypatch.setattr("sys.stdout", output)
     monkeypatch.setenv("COLORTERM", "truecolor")
+    monkeypatch.setenv("TERM", "xterm-256color")
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("TEXTUAL_THEME", "nord")
     assert main([str(path), "--print"]) == 0

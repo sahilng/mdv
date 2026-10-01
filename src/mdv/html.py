@@ -4,7 +4,6 @@ import asyncio
 from html.parser import HTMLParser
 from collections import OrderedDict
 from copy import deepcopy
-from dataclasses import replace
 import re
 
 from markdown_it import MarkdownIt
@@ -93,11 +92,17 @@ def html_markdown(source):
 
 def copy_inline_tokens(tokens):
     """Copy mutable token fields without deep-copying immutable text and flags."""
-    return [replace(token, attrs=token.attrs.copy(),
-                    map=token.map.copy() if token.map is not None else None,
-                    meta=deepcopy(token.meta) if token.meta else {},
-                    children=copy_inline_tokens(token.children)
-                    if token.children is not None else None)
+    return [Token(token.type, token.tag, token.nesting,
+                  attrs=token.attrs.copy(),
+                  map=token.map.copy() if token.map is not None else None,
+                  level=token.level,
+                  children=copy_inline_tokens(token.children) if token.children is not None else None,
+                  content=token.content,
+                  markup=token.markup,
+                  info=token.info,
+                  meta=deepcopy(token.meta) if token.meta else {},
+                  block=token.block,
+                  hidden=token.hidden)
             for token in tokens]
 
 

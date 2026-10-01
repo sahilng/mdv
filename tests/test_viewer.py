@@ -43,6 +43,24 @@ async def test_start_in_editor_and_save(tmp_path, existing):
         assert not app.editing
 
 
+async def test_empty_read_view_can_be_edited_and_rendered(tmp_path):
+    path = tmp_path / "empty.md"
+    path.write_text("")
+    app = Viewer(path)
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        reader = app.query_one(MarkdownViewer).document
+        assert reader.source == ""
+        await pilot.press("e")
+        assert app.editing
+        editor = app.query_one(TextArea)
+        editor.load_text("# Heading\n")
+        await pilot.press("ctrl+s", "escape")
+        assert not app.editing
+        assert reader.source == "# Heading\n"
+        assert reader.table_of_contents[0][1] == "Heading"
+
+
 def test_cli_interactive_validation(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("sys.stdout.isatty", lambda: True)

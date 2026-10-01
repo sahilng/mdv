@@ -1,10 +1,11 @@
 from rich.console import Console
+from markdown_it.token import Token
 from textual.widgets import MarkdownViewer
 from textual.widgets._markdown import MarkdownH1, MarkdownParagraph, MarkdownTable
 
 from mdv.app import Viewer
 from mdv.editor import MarkdownEditor
-from mdv.html import HTMLMarkdownParser, PrintMarkdown
+from mdv.html import HTMLMarkdownParser, PrintMarkdown, copy_inline_tokens
 from test_live_editor import settle, source_style
 
 
@@ -22,6 +23,24 @@ def test_html_tokens_formatting_links_and_code():
     output = console.export_text()
     assert "bold" in output and "<b>bold" not in output
     assert "<b>code</b>" in output
+
+
+def test_cached_inline_tokens_keep_values_and_isolate_mutable_fields():
+    child = Token("text", "", 0, content="child", meta={"nested": [1]})
+    original = Token("link_open", "a", 1, attrs={"href": "https://example.com"},
+                     map=[1, 2], level=2, children=[child], content="link",
+                     markup="[", info="info", meta={"nested": [2]},
+                     block=True, hidden=True)
+    cloned = copy_inline_tokens([original])[0]
+    assert cloned == original
+    cloned.attrs["href"] = "changed"
+    cloned.map[0] = 9
+    cloned.meta["nested"].append(3)
+    cloned.children[0].meta["nested"].append(4)
+    assert original.attrs["href"] == "https://example.com"
+    assert original.map == [1, 2]
+    assert original.meta["nested"] == [2]
+    assert child.meta["nested"] == [1]
 
 
 async def test_html_blocks_read_and_live_source(tmp_path):
