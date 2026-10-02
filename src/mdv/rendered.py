@@ -9,6 +9,7 @@ from functools import cached_property, lru_cache
 from bisect import bisect_right
 from dataclasses import dataclass, field
 from collections.abc import Sequence
+from collections import OrderedDict
 import re
 
 from rich.cells import cell_len
@@ -450,12 +451,14 @@ class RenderMarkdown(Markdown):
 class ProjectedRows(Sequence[Strip]):
     """Build source metadata strips only for rows actually drawn or inspected."""
 
+    CACHE_LIMIT = 512
+
     def __init__(self, layouts):
         self.layouts = layouts
         self.max_width = getattr(layouts, "max_width", None)
         if self.max_width is None:
             self.max_width = max((width for _, _, width in layouts), default=0)
-        self._cache = {}
+        self._cache = OrderedDict()
 
     def __len__(self):
         return len(self.layouts)
@@ -478,6 +481,10 @@ class ProjectedRows(Sequence[Strip]):
                         segment = Segment(segment.text, segment.style + RichStyle.from_meta({SOURCE: source}))
                 mapped.append(segment)
             self._cache[index] = Strip(mapped, width)
+            if len(self._cache) > self.CACHE_LIMIT:
+                self._cache.popitem(last=False)
+        else:
+            self._cache.move_to_end(index)
         return self._cache[index]
 
 
@@ -571,6 +578,8 @@ def snapshot(document: RenderMarkdown) -> Projection:
 class AlignedLayouts(Sequence):
     """Compute glyph layout and source coordinates only for requested rows."""
 
+    CACHE_LIMIT = 512
+
     def __init__(self, document, editor, glyphs, offsets):
         self.lines = editor.document.lines.copy()
         self.offsets = offsets
@@ -584,7 +593,7 @@ class AlignedLayouts(Sequence):
         self.boundaries = []
         self.line_starts = []
         self.rows = []
-        self._cache = {}
+        self._cache = OrderedDict()
         self.position_maps = {}
         for row, line in enumerate(self.lines):
             boundaries = [0, *editor.wrapped_document.get_offsets(row), len(line)]
@@ -627,6 +636,11 @@ class AlignedLayouts(Sequence):
                     positions = {index: point + Offset(padding, 0) for index, point in positions.items()}
             self.position_maps[row] = positions
             self._cache[row] = (segments, sources, x)
+            if len(self._cache) > self.CACHE_LIMIT:
+                oldest, _ = self._cache.popitem(last=False)
+                del self.position_maps[oldest]
+        else:
+            self._cache.move_to_end(row)
         return self._cache[row]
 
 

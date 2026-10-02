@@ -8,7 +8,9 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
+from textual.geometry import Offset
 from textual.widgets import Footer, Header, Markdown, MarkdownViewer, Static, TextArea
+from textual.widgets._markdown import MarkdownBlock, MarkdownTableOfContents
 
 from .html import HTMLMarkdown
 from .editor import MarkdownEditor
@@ -21,8 +23,6 @@ from .theme import load_theme, save_theme
 
 class DocumentViewer(MarkdownViewer):
     def compose(self):
-        from textual.widgets._markdown import MarkdownTableOfContents
-
         markdown = HTMLMarkdown(open_links=False)
         markdown.can_focus = True
         yield markdown
@@ -55,16 +55,19 @@ class Viewer(App):
     Screen.editing #editor { display: block; }
     AlignedPreview { display: none; }
     Screen.editing AlignedPreview { display: block; }
-    Screen.editing.live-edit #editor { border: none; padding: 0; }
+    Screen.editing.live-edit #editor { border: none; padding: 1 3; }
     Screen.editing.live-edit AlignedPreview { display: none; }
     Screen.editing MarkdownViewer { display: none; }
+    #edit-toc { display: none; width: 28; max-width: 35%; height: 1fr; }
+    Screen.editing.live-edit.toc-visible #edit-toc { display: block; }
     Markdown { padding: 1 3; }
     MarkdownTableOfContents { width: 28; max-width: 35%; }
     #status { height: 1; padding: 0 1; background: $boost; color: $text-muted; }
     """
     BINDINGS = [
         Binding("q", "quit", "Quit"),
-        Binding("t", "toc", "Contents"),
+        Binding("t", "toc", "Sidebar", show=False),
+        Binding("ctrl+t", "toggle_toc", "Sidebar", priority=True),
         Binding("r", "reload", "Reload"),
         Binding("e", "edit", "Edit"),
         Binding("ctrl+l", "toggle_live_edit", "Live / split", priority=True),
@@ -78,14 +81,14 @@ class Viewer(App):
         Binding("G", "bottom", "Bottom", show=False),
     ]
 
-    def __init__(self, path: Path, *, show_toc: bool = True, start_editing: bool = False, live_edit: bool = False):
+    def __init__(self, path: Path, *, show_toc: bool = False, start_editing: bool = False, live_edit: bool | None = None):
         super().__init__()
         self.theme = load_theme()
         self.initial_theme = self.theme
         self.path = path
         self.show_toc = show_toc
-        self.start_editing = start_editing or live_edit
-        self.live_edit = live_edit
+        self.start_editing = start_editing or live_edit is True
+        self.live_edit = True if live_edit is None else live_edit
         self.sub_title = path.name
         self.editing = False
         self.content: str | None = None
@@ -102,16 +105,19 @@ class Viewer(App):
         self._editor_status: str | None = None
 
     def compose(self) -> ComposeResult:
+        renderer = RenderMarkdown(id="edit-layout")
         yield Header()
         with Horizontal(id="panes"):
+            yield MarkdownTableOfContents(renderer, id="edit-toc")
             yield MarkdownEditor(id="editor", show_line_numbers=True)
             yield AlignedPreview()
-            yield RenderHost()
+            yield RenderHost(renderer)
             yield DocumentViewer("", show_table_of_contents=self.show_toc, open_links=False)
         yield Static(str(self.path), id="status", markup=False)
         yield Footer()
 
     def on_mount(self) -> None:
+        self.screen.set_class(self.show_toc, "toc-visible")
         editor = self.query_one("#editor", TextArea)
         preview = self.query_one(AlignedPreview)
         self.watch(editor, "scroll_y", lambda: self.sync_scroll(editor, preview), init=False)
@@ -223,6 +229,30 @@ class Viewer(App):
         else:
             document.post_message(Markdown.LinkClicked(document, event.href))
 
+    def on_markdown_table_of_contents_updated(self, event: Markdown.TableOfContentsUpdated) -> None:
+        if event.markdown is self.query_one(RenderMarkdown):
+            tokens = event.markdown.source_tokens
+            titles = []
+            for index, token in enumerate(tokens[:-1]):
+                if token.type == "heading_open" and tokens[index + 1].type == "inline":
+                    inline = tokens[index + 1]
+                    titles.append("".join(child.content for child in inline.children or []
+                                          if child.type in {"text", "code_inline", "image"}) or inline.content)
+            contents = [(level, titles[index] if index < len(titles) else title, block_id)
+                        for index, (level, title, block_id) in enumerate(event.table_of_contents)]
+            self.query_one("#edit-toc", MarkdownTableOfContents).table_of_contents = contents
+
+    def on_markdown_table_of_contents_selected(self, event: Markdown.TableOfContentsSelected) -> None:
+        if event.markdown is not self.query_one(RenderMarkdown):
+            return
+        block = self.query_one(RenderMarkdown).query_one(f"#{event.block_id}")
+        editor = self.query_one(MarkdownEditor)
+        editor.move_cursor((block.source_range[0], 0))
+        editor.scroll_to(y=editor.wrapped_document.location_to_offset(editor.cursor_location).y,
+                         animate=False, immediate=True)
+        editor.focus()
+        event.stop()
+
     def on_unmount(self) -> None:
         if self.theme != self.initial_theme:
             try:
@@ -257,6 +287,9 @@ class Viewer(App):
         if action in {"save", "close_editor", "discard", "quit_editor", "toggle_live_edit"}:
             # Priority bindings must not intercept keys on the command palette.
             return self.editing and self.screen is self.query_one("#editor", TextArea).screen
+        if action == "toggle_toc":
+            return (self.screen is self.query_one("#editor", TextArea).screen
+                    and (not self.editing or self.live_edit))
         if action in {"quit", "toc", "reload", "edit", "down", "up", "top", "bottom"}:
             return not self.editing
         return True
@@ -272,8 +305,8 @@ class Viewer(App):
             self.notify("Editing is available for Markdown files only.")
             return
         viewer = self.query_one(MarkdownViewer)
+        read_row = self._read_top_source_row(viewer)
         self.show_toc = viewer.show_table_of_contents
-        viewer.show_table_of_contents = False
         self.editing = True
         self.screen.add_class("editing")
         editor = self.query_one("#editor", TextArea)
@@ -281,6 +314,9 @@ class Viewer(App):
         self.query_one("#editor", MarkdownEditor).set_live_render(self.live_edit)
         editor.load_text(self.content)
         self._saved_lines = editor.document.lines.copy()
+        if read_row:
+            editor.move_cursor((min(read_row, editor.document.line_count - 1), 0))
+            self.call_after_refresh(self._scroll_editor_to_cursor)
         editor.focus()
         self.schedule_scroll_sync()
         self.update_editor_status()
@@ -294,6 +330,7 @@ class Viewer(App):
         editor.focus()
         self.schedule_scroll_sync()
         self.update_editor_status()
+        self.refresh_bindings()
 
     def update_editor_status(self) -> None:
         marker = "Unsaved changes" if self.dirty else ("Saved" if self.path.exists() else "New file")
@@ -329,6 +366,8 @@ class Viewer(App):
         if self.dirty:
             self.notify("Save with Ctrl+S or discard with Ctrl+D before leaving the editor.")
             return
+        editor = self.query_one(MarkdownEditor)
+        edit_row = editor.wrapped_document.offset_to_location(Offset(0, int(editor.scroll_y)))[0]
         self.editing = False
         self._editor_status = None
         self.screen.remove_class("editing")
@@ -337,6 +376,7 @@ class Viewer(App):
         if viewer.document.source != (self.content or ""):
             await viewer.document.update(self.content or "")
         viewer.show_table_of_contents = self.show_toc
+        self.call_after_refresh(self._scroll_reader_to_row, edit_row)
         viewer.document.focus()
         self.query_one("#status", Static).update(str(self.path))
         self.refresh_bindings()
@@ -355,8 +395,38 @@ class Viewer(App):
         self.exit()
 
     def action_toc(self) -> None:
+        self.action_toggle_toc()
+
+    def action_toggle_toc(self) -> None:
+        self.show_toc = not self.show_toc
         viewer = self.query_one(MarkdownViewer)
-        viewer.show_table_of_contents = not viewer.show_table_of_contents
+        viewer.show_table_of_contents = self.show_toc
+        self.screen.set_class(self.show_toc, "toc-visible")
+        if self.editing:
+            self.schedule_scroll_sync()
+
+    @staticmethod
+    def _read_top_source_row(viewer: MarkdownViewer) -> int:
+        blocks = [block for block in viewer.document.query(MarkdownBlock)
+                  if block.region.height and block.source_range]
+        visible = [block for block in blocks if block.region.bottom > viewer.content_region.y]
+        return min(visible, key=lambda block: block.region.y).source_range[0] if visible else 0
+
+    def _scroll_editor_to_cursor(self) -> None:
+        if self.editing:
+            editor = self.query_one(MarkdownEditor)
+            y = editor.wrapped_document.location_to_offset(editor.cursor_location).y
+            editor.scroll_to(y=y, animate=False, immediate=True)
+
+    def _scroll_reader_to_row(self, row: int) -> None:
+        if self.editing:
+            return
+        viewer = self.query_one(MarkdownViewer)
+        blocks = [block for block in viewer.document.query(MarkdownBlock)
+                  if block.region.height and block.source_range and block.source_range[0] <= row]
+        if blocks:
+            block = max(blocks, key=lambda block: block.source_range[0])
+            viewer.scroll_to_widget(block, top=True, animate=False)
 
     def action_down(self) -> None:
         self.query_one(MarkdownViewer).scroll_down()

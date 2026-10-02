@@ -95,7 +95,7 @@ async def test_edit_rendering_uses_read_styles_and_theme(tmp_path, monkeypatch, 
     monkeypatch.setattr("mdv.app.save_theme", lambda _: None)
     path = tmp_path / "theme.md"
     path.write_text(SOURCE_TEXT)
-    app = Viewer(path, show_toc=False)
+    app = Viewer(path, show_toc=False, live_edit=False)
     app.theme = theme
     async with app.run_test(size=(90, 35)) as pilot:
         await settle(app, pilot)
@@ -136,7 +136,10 @@ async def test_live_mouse_selection_wrap_resize_and_up(tmp_path):
         await settle(app, pilot)
         editor = app.query_one(MarkdownEditor)
         point = editor.projection.offset((2, 5))
-        await pilot.click(editor, offset=(point.x, point.y))
+        await pilot.click(editor, offset=(
+            editor.content_region.x - editor.region.x + point.x,
+            editor.content_region.y - editor.region.y + point.y,
+        ))
         assert editor.cursor_location == (2, 5)
         await pilot.press("shift+right", "shift+right", "X")
         await settle(app, pilot)
@@ -158,7 +161,7 @@ def test_live_cli(tmp_path, monkeypatch):
     monkeypatch.setattr("mdv.app.Viewer", viewer)
     path = tmp_path / "new.md"
     assert main(["--live-edit", str(path)]) == 0
-    viewer.assert_called_once_with(path, show_toc=True, start_editing=True, live_edit=True)
+    viewer.assert_called_once_with(path, show_toc=False, start_editing=True, live_edit=True)
 
 
 async def test_live_long_code_and_incomplete_markdown(tmp_path):
@@ -238,7 +241,7 @@ async def test_edit_burst_coalesces_and_read_view_updates_on_close(tmp_path, mon
 
     path = tmp_path / "burst.md"
     path.write_text("# Original\n\nText\n")
-    app = Viewer(path, start_editing=True)
+    app = Viewer(path, start_editing=True, live_edit=False)
     async with app.run_test() as pilot:
         await settle(app, pilot)
         renderer = app.query_one(RenderMarkdown)
@@ -392,7 +395,10 @@ async def test_h1_centering_cursor_mouse_selection_and_resize(tmp_path, heading)
         editor.move_cursor((0, 3))
         assert editor._cursor_offset.x == padding + cell_len(editor.document.lines[0][:3])
         assert editor.render_line(0).text.startswith(' ' * padding + editor.document.lines[0])
-        await pilot.click(editor, offset=(padding + cell_len(editor.document.lines[0][:3]), 0))
+        await pilot.click(editor, offset=(
+            editor.content_region.x - editor.region.x + padding + cell_len(editor.document.lines[0][:3]),
+            editor.content_region.y - editor.region.y,
+        ))
         assert editor.cursor_location == (0, 3)
         await pilot.press('shift+right', 'X')
         assert editor.cursor_location == (0, 4)
@@ -438,7 +444,7 @@ async def test_split_preview_reuses_styles_and_draws_rows_on_demand(tmp_path):
 
     path = tmp_path / 'large-preview.md'
     path.write_text('# Heading\n\nFirst\n\n' + '**unchanged** paragraph\n\n' * 120)
-    app = Viewer(path, start_editing=True)
+    app = Viewer(path, start_editing=True, live_edit=False)
     async with app.run_test(size=(80, 20)) as pilot:
         await settle(app, pilot)
         editor = app.query_one(MarkdownEditor)
@@ -465,6 +471,37 @@ async def test_split_preview_reuses_styles_and_draws_rows_on_demand(tmp_path):
         # Source metadata follows insertions even for rows first drawn later.
         assert any(segment.style and segment.style.meta.get(SOURCE) == expected
                    for segment in preview.rows[bottom])
+
+
+async def test_split_preview_limits_scrolled_row_caches(tmp_path):
+    from mdv.rendered import AlignedLayouts, ProjectedRows
+
+    path = tmp_path / 'long-preview.md'
+    path.write_text('\n\n'.join(f'Paragraph {index}' for index in range(700)))
+    app = Viewer(path, start_editing=True, live_edit=False)
+    async with app.run_test(size=(80, 20)) as pilot:
+        await settle(app, pilot)
+        editor = app.query_one(MarkdownEditor)
+        assert editor.wrapped_document.height == len(editor.wrapped_document._offset_to_line_info)
+        preview = app.query_one(AlignedPreview)
+        projection = preview.projection
+        rows = preview.rows
+        assert isinstance(rows, ProjectedRows)
+        layouts = rows.layouts
+        assert isinstance(layouts, AlignedLayouts)
+        for row in range(len(rows)):
+            rows[row]
+        assert len(rows._cache) <= rows.CACHE_LIMIT
+        assert len(layouts._cache) <= layouts.CACHE_LIMIT
+        assert len(layouts.position_maps) <= layouts.CACHE_LIMIT
+        assert 'Paragraph 0' in rows[0].text
+        assert 'Paragraph 699' in rows[-1].text
+        assert projection.offset((0, 0)).y == 0
+        assert projection.offset((1398, 0)).y == len(rows) - 1
+        assert len(projection.positions) > 700
+        editor.insert('new\n', location=(0, 0))
+        await settle(app, pilot)
+        assert editor.wrapped_document.height == len(editor.wrapped_document._offset_to_line_info)
 
 
 @pytest.mark.parametrize('live', [False, True])

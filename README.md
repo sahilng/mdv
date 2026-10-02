@@ -37,7 +37,7 @@ move it.
 mdv README.md
 mdv report.pdf
 mdv slides.pptx
-mdv document.docx --no-toc
+mdv document.docx --toc        # start with the sidebar shown
 mdv README.md --print         # render in the current terminal
 md README.md                 # shortcut for mdv --print
 mdv README.md --edit          # start in the editor
@@ -48,9 +48,10 @@ cat README.md | mdv           # render piped Markdown
 ```
 
 Interactive mode includes headings, tables, syntax-highlighted code, and a
-clickable table of contents. Use arrow keys, Page Up / Page Down, or `j` / `k`
-to scroll; `g` / `G` jump to the start / end. Press `t` to toggle contents,
-`r` to reload, and `q` to quit. Conversion runs in the background so the UI
+clickable table of contents sidebar, hidden by default. Use arrow keys, Page Up /
+Page Down, or `j` / `k` to scroll; `g` / `G` jump to the start / end. Press
+`Ctrl+T` to toggle the sidebar in reading and live editing (`t` also works while
+reading), `r` to reload, and `q` to quit. Conversion runs in the background so the UI
 stays responsive. Click HTTP or HTTPS links to open them in your default browser.
 Heading links navigate within the document; other links display their destination.
 Embedded HTML headings, paragraphs, lists, tables, links, and common inline
@@ -58,14 +59,15 @@ formatting render as terminal Markdown. HTML source stays intact while editing,
 with tags visible in gray in live mode. `<details>` sections have clickable
 summary controls in the read view. CSS and JavaScript are not executed.
 
-Press `e` on a Markdown file to edit its source in the left pane with a live
-preview on the right. Use `Ctrl+S` to save, `Ctrl+Q` to quit directly, and `Esc`
-to return to reading. The preview preserves read-mode text styles, code highlighting, and theme,
+Press `e` on a Markdown file to edit in the single-pane live editor. The
+contents sidebar stays available; select a heading to jump to its source. The
+live editor uses the same top and side margins as the read view.
+Use `Ctrl+L` to switch to the split source and preview view, `Ctrl+S` to save,
+`Ctrl+Q` to quit directly, and `Esc` to return to reading. The preview preserves read-mode text styles, code highlighting, and theme,
 while aligning each row with the source, including wrapped lines and blank lines.
 Tables use source-aligned rows, and scrolling either pane keeps the rows together.
 
-Press `Ctrl+L` while editing to toggle a single-pane live editor, or start there
-with `--live-edit`. The whole document stays rendered, including the text being
+The whole document stays rendered in the default editor, including the text being
 edited, with Markdown syntax visible in gray throughout. Newlines and blank
 lines remain visible and editable. H1 headings stay centered in live mode and
 in the split preview. Source list markers,

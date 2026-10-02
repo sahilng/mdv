@@ -15,8 +15,12 @@ class RenderHost(Container):
     }
     """
 
+    def __init__(self, renderer=None):
+        super().__init__()
+        self.renderer = renderer or RenderMarkdown(id="edit-layout")
+
     def compose(self):
-        yield RenderMarkdown(id="edit-layout")
+        yield self.renderer
 
     def notify_style_update(self) -> None:
         super().notify_style_update()

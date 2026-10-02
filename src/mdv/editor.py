@@ -7,9 +7,18 @@ from textual.geometry import Offset
 from textual.strip import Strip
 from rich.text import Text
 from textual.binding import Binding
+from textual.document._wrapped_document import WrappedDocument
 from textual.widgets import TextArea
 
 from .rendered import aligned_snapshot
+
+
+class _EditorWrappedDocument(WrappedDocument):
+    @property
+    def height(self) -> int:
+        # Textual already maintains one entry per visual row. Its default
+        # height property scans every source line for each rendered screen row.
+        return len(self._offset_to_line_info)
 
 
 class MarkdownEditor(TextArea):
@@ -27,6 +36,13 @@ class MarkdownEditor(TextArea):
         self._styled_lines = []
         self._code_rows = set()
         super().__init__(*args, **kwargs)
+        # TextArea constructs the wrapped document itself. Change only its
+        # height lookup, retaining the wrapping data it already built.
+        self.wrapped_document.__class__ = _EditorWrappedDocument
+
+    def _set_document(self, text, language):
+        super()._set_document(text, language)
+        self.wrapped_document.__class__ = _EditorWrappedDocument
 
     def action_document_start(self, select=False):
         self.move_cursor((0, 0), select=select)

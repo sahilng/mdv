@@ -4,8 +4,11 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from textual.command import CommandPalette
 from textual.widgets import Markdown, MarkdownViewer, Static, TextArea
+from textual.widgets._markdown import MarkdownTableOfContents
+from textual.widgets import Tree
 
 from mdv.app import Viewer
+from mdv.editor import MarkdownEditor
 from mdv.preview import AlignedPreview
 from mdv.rendered import SOURCE
 from mdv.cli import main
@@ -34,6 +37,7 @@ async def test_start_in_editor_and_save(tmp_path, existing):
         await app.workers.wait_for_complete()
         editor = app.query_one(TextArea)
         assert app.editing
+        assert editor.live_render
         assert editor.has_focus
         assert editor.text == ("# Existing\n" if existing else "")
         assert path.exists() is existing
@@ -41,6 +45,108 @@ async def test_start_in_editor_and_save(tmp_path, existing):
         await pilot.press("ctrl+s", "escape")
         assert path.read_text() == "# Saved\n"
         assert not app.editing
+
+
+async def test_contents_toggle_and_navigation_in_live_editor(tmp_path):
+    path = tmp_path / "contents.md"
+    path.write_text("# First\n\nText\n\n## Second\n\nMore text\n")
+    app = Viewer(path)
+    async with app.run_test(size=(80, 20)) as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        viewer = app.query_one(MarkdownViewer)
+        edit_toc = app.query_one("#edit-toc", MarkdownTableOfContents)
+        assert not viewer.show_table_of_contents
+        await pilot.press("ctrl+t")
+        assert viewer.show_table_of_contents
+        await pilot.press("e")
+        await settle_preview(app, pilot)
+        editor = app.query_one(MarkdownEditor)
+        assert editor.live_render
+        assert edit_toc.display
+        await pilot.press("ctrl+t")
+        await settle_preview(app, pilot)
+        assert not edit_toc.display
+        assert not viewer.show_table_of_contents
+        await pilot.press("ctrl+t")
+        await settle_preview(app, pilot)
+        assert edit_toc.display
+        tree = edit_toc.query_one(Tree)
+        assert len(tree.root.children) == 1
+        tree.select_node(tree.root.children[0].children[0])
+        await pilot.pause()
+        assert editor.cursor_location == (4, 0)
+        assert editor.has_focus
+        editor.replace("Updated", (4, 3), (4, 9))
+        await settle_preview(app, pilot)
+        assert edit_toc.table_of_contents[1][1] == "Updated"
+        await pilot.press("ctrl+s", "escape")
+        assert not app.editing
+        assert viewer.show_table_of_contents
+        assert viewer.document.table_of_contents[1][1] == "Updated"
+
+
+async def test_read_edit_transition_keeps_nearby_content(tmp_path):
+    path = tmp_path / "position.md"
+    path.write_text("\n\n".join(f"## Section {index}\n\nParagraph {index}" for index in range(40)))
+    app = Viewer(path)
+    async with app.run_test(size=(80, 20)) as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        viewer = app.query_one(MarkdownViewer)
+        heading = next(block for block in viewer.document.children
+                       if getattr(block, "source_range", (None,))[0] == 80)
+        viewer.scroll_to_widget(heading, top=True, animate=False)
+        await pilot.pause()
+        await pilot.press("e")
+        await settle_preview(app, pilot)
+        editor = app.query_one(MarkdownEditor)
+        assert editor.cursor_location[0] >= 75
+        assert editor.scroll_y > 0
+        await pilot.press("escape")
+        await pilot.pause()
+        assert viewer.scroll_y > 0
+        assert app._read_top_source_row(viewer) >= 75
+
+
+@pytest.mark.parametrize("sidebar", [False, True])
+async def test_live_editor_matches_read_margins(tmp_path, sidebar):
+    path = tmp_path / "margins.md"
+    path.write_text("# Heading\n\nBody\n")
+    app = Viewer(path, show_toc=sidebar)
+    async with app.run_test(size=(90, 22)) as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        reader = app.query_one(MarkdownViewer).document
+        read_margin = (reader.content_region.x - reader.region.x,
+                       reader.content_region.y - reader.region.y)
+        await pilot.press("e")
+        await settle_preview(app, pilot)
+        editor = app.query_one(MarkdownEditor)
+        assert editor.live_render
+        assert (editor.content_region.x - editor.region.x,
+                editor.content_region.y - editor.region.y) == read_margin == (3, 1)
+        assert app.query_one("#edit-toc", MarkdownTableOfContents).display is sidebar
+
+
+async def test_sidebar_shortcut_hidden_in_split_editor(tmp_path):
+    path = tmp_path / "split.md"
+    path.write_text("# Heading\n")
+    app = Viewer(path, start_editing=True)
+    async with app.run_test() as pilot:
+        await settle_preview(app, pilot)
+        assert "ctrl+t" in app.screen.active_bindings
+        await pilot.press("ctrl+l")
+        await settle_preview(app, pilot)
+        assert not app.live_edit
+        assert "ctrl+t" not in app.screen.active_bindings
+        await pilot.press("ctrl+t")
+        assert not app.show_toc
+        await pilot.press("ctrl+l")
+        await settle_preview(app, pilot)
+        assert "ctrl+t" in app.screen.active_bindings
+        await pilot.press("ctrl+t")
+        assert app.show_toc
 
 
 async def test_empty_read_view_can_be_edited_and_rendered(tmp_path):
@@ -71,9 +177,12 @@ def test_cli_interactive_validation(tmp_path, monkeypatch, capsys):
     assert "mde" in capsys.readouterr().err
     viewer.assert_not_called()
     assert main(["--edit", str(path)]) == 0
-    viewer.assert_called_once_with(path, show_toc=True, start_editing=True)
+    viewer.assert_called_once_with(path, show_toc=False, start_editing=True)
     viewer.return_value.run.assert_called_once()
     assert not path.exists()
+    viewer.reset_mock()
+    assert main(["--toc", "--edit", str(path)]) == 0
+    viewer.assert_called_once_with(path, show_toc=True, start_editing=True)
     viewer.reset_mock()
     for invalid in (tmp_path, tmp_path / "new.pdf", tmp_path / "missing" / "new.md"):
         assert main(["--edit", str(invalid)]) == 1
@@ -106,7 +215,7 @@ def test_shortcuts(entry, flag, monkeypatch):
 async def test_escape_palette_preserves_edit_mode(tmp_path, dirty):
     path = tmp_path / "edit.md"
     path.write_text("# Original\n")
-    app = Viewer(path)
+    app = Viewer(path, show_toc=True)
     async with app.run_test() as pilot:
         await app.workers.wait_for_complete()
         await pilot.press("e")
@@ -122,7 +231,7 @@ async def test_escape_palette_preserves_edit_mode(tmp_path, dirty):
         assert app.editing
         assert document_screen.has_class("editing")
         assert editor.has_focus
-        assert not viewer.show_table_of_contents
+        assert viewer.show_table_of_contents
         assert editor.text == ("# Changed\n" if dirty else "# Original\n")
         assert app.dirty is dirty
         await pilot.press("ctrl+d" if dirty else "escape")
@@ -159,7 +268,7 @@ async def test_quit_directly_from_editor(tmp_path, monkeypatch, dirty):
 async def test_edit_preview_save_and_discard(tmp_path):
     path = tmp_path / "edit.md"
     path.write_text("# Original\n")
-    app = Viewer(path)
+    app = Viewer(path, show_toc=True, live_edit=False)
     async with app.run_test(size=(100, 30)) as pilot:
         await app.workers.wait_for_complete()
         await pilot.press("e")
@@ -167,7 +276,7 @@ async def test_edit_preview_save_and_discard(tmp_path):
         viewer = app.query_one(MarkdownViewer)
         assert editor.has_focus
         assert editor.region.right <= app.query_one(AlignedPreview).region.x
-        assert not viewer.show_table_of_contents
+        assert viewer.show_table_of_contents
         editor.load_text("# Updated\n")
         await pilot.pause()
         assert viewer.document.table_of_contents[0][1] == "Original"
@@ -205,7 +314,7 @@ async def test_save_failure_keeps_edits(tmp_path, monkeypatch):
 async def test_edit_scroll_sync(tmp_path):
     path = tmp_path / "scroll.md"
     path.write_text("\n\n".join(f"## Section {i}\n\n" + "Some text. " * 20 for i in range(40)))
-    app = Viewer(path, start_editing=True)
+    app = Viewer(path, start_editing=True, live_edit=False)
     async with app.run_test(size=(100, 30)) as pilot:
         await app.workers.wait_for_complete()
         await settle_preview(app, pilot)
@@ -255,7 +364,7 @@ async def test_preview_rows_align_with_source(tmp_path):
     )
     path = tmp_path / "blocks.md"
     path.write_text(source)
-    app = Viewer(path, start_editing=True)
+    app = Viewer(path, start_editing=True, live_edit=False)
     async with app.run_test(size=(100, 30)) as pilot:
         await app.workers.wait_for_complete()
         await settle_preview(app, pilot)
@@ -324,7 +433,7 @@ async def test_aligned_preview_links_and_empty_edits(tmp_path, monkeypatch):
     path.write_text("[Website](https://example.com)\n\n" + "Paragraph\n\n" * 30 + "## Target\n\n" + "Tail\n\n" * 30)
     browser = Mock(return_value=True)
     monkeypatch.setattr("mdv.app.webbrowser.open", browser)
-    app = Viewer(path, start_editing=True)
+    app = Viewer(path, start_editing=True, live_edit=False)
     async with app.run_test() as pilot:
         await app.workers.wait_for_complete()
         await settle_preview(app, pilot)
@@ -410,8 +519,9 @@ async def test_interaction_and_reload(tmp_path):
         await pilot.pause()
         viewer = app.query_one(MarkdownViewer)
         assert viewer.document.table_of_contents[0][1] == "First"
-        await pilot.press("t")
         assert not viewer.show_table_of_contents
+        await pilot.press("t")
+        assert viewer.show_table_of_contents
         await pilot.press("G")
         await pilot.pause()
         assert viewer.scroll_y > 0

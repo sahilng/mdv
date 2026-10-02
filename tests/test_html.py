@@ -54,7 +54,7 @@ async def test_html_blocks_read_and_live_source(tmp_path):
         assert reader.query_one(MarkdownH1)._content.plain == "Title"
         assert reader.query_one(MarkdownTable)
         assert reader.query_one(MarkdownParagraph)._content.plain == "A bold & italic paragraph."
-        await pilot.press("e", "ctrl+l")
+        await pilot.press("e")
         await settle(app, pilot)
         editor = app.query_one(MarkdownEditor)
         assert editor.text == text
@@ -95,6 +95,6 @@ async def test_details_summary_expands_markdown_body(tmp_path):
         await pilot.pause()
         assert not detail.collapsed
         assert detail.query_one(MarkdownFence).display
-        await pilot.press('e', 'ctrl+l')
+        await pilot.press('e')
         await settle(app, pilot)
         assert app.query_one(MarkdownEditor).text == source

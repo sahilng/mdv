@@ -13,7 +13,10 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--raw", action="store_true", help="output Markdown source (including converted documents)")
     mode.add_argument("--edit", action="store_true", help="open the Markdown editor, creating a new file on save")
     mode.add_argument("--live-edit", action="store_true", help="edit in one pane with live Markdown styling and gray syntax")
-    parser.add_argument("--no-toc", action="store_true", help="start with the table of contents hidden")
+    sidebar = parser.add_mutually_exclusive_group()
+    sidebar.add_argument("--toc", dest="show_toc", action="store_true", help="start with the sidebar shown")
+    sidebar.add_argument("--no-toc", dest="show_toc", action="store_false", help="start with the sidebar hidden (default)")
+    parser.set_defaults(show_toc=False)
     args = parser.parse_args(argv)
     args.edit = args.edit or args.live_edit
     if args.edit and args.file in (None, "-"):
@@ -42,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
         if interactive:
             from .app import Viewer
 
-            Viewer(path, show_toc=not args.no_toc, start_editing=args.edit,
+            Viewer(path, show_toc=args.show_toc, start_editing=args.edit,
                    **({"live_edit": True} if args.live_edit else {})).run()
         else:
             content = load_document(path) if path else sys.stdin.read()
