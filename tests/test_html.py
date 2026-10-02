@@ -5,7 +5,9 @@ from textual.widgets._markdown import MarkdownH1, MarkdownParagraph, MarkdownTab
 
 from mdv.app import Viewer
 from mdv.editor import MarkdownEditor
-from mdv.html import HTMLMarkdownParser, PrintMarkdown, copy_inline_tokens
+from mdv.html import (HTMLMarkdownParser, MarkdownAlert,
+                      PrintMarkdown, copy_inline_tokens)
+from mdv.preview import AlignedPreview
 from test_live_editor import settle, source_style
 
 
@@ -76,6 +78,66 @@ def test_html_comments_scripts_and_partial_tags():
 def test_inline_html_code():
     children = HTMLMarkdownParser().parse("Text <code>x &lt; 2</code> tail")[1].children
     assert any(token.type == "code_inline" and token.content == "x < 2" for token in children)
+
+
+def test_tasks_footnotes_and_alerts_print():
+    source = ('- [x] Done\n- [ ] Pending\n\nA note[^details].\n\n'
+              '[^details]: The **detail**.\n\n> [!WARNING]\n> Be careful.\n')
+    tokens = HTMLMarkdownParser().parse(source)
+    tasks = [token.meta["task"] for token in tokens if "task" in token.meta]
+    assert tasks == [True, False]
+    assert any(token.meta.get("alert") == "warning" for token in tokens)
+    assert any(child.content == "[1]" for token in tokens for child in token.children or [])
+    console = Console(width=80)
+    with console.capture() as capture:
+        console.print(PrintMarkdown(source))
+    output = capture.get()
+    assert "☑ Done" in output and "☐ Pending" in output
+    assert "A note[1]." in output and "1 The detail." in output
+    assert "Warning: Be careful." in output
+    assert "[!WARNING]" not in output and "[^details]" not in output
+
+
+def test_all_alert_labels_and_footnote_reference_order():
+    source = ("First[^later], second[^earlier].\n\n"
+              "[^earlier]: Defined first.\n\n[^later]: Defined second.\n\n"
+              + "\n\n".join(f"> [!{kind}]\n> Message." for kind in
+                              ("NOTE", "TIP", "IMPORTANT", "WARNING", "CAUTION")))
+    tokens = HTMLMarkdownParser().parse(source)
+    assert [token.meta["alert"] for token in tokens if "alert" in token.meta] == [
+        "note", "tip", "important", "warning", "caution"]
+    references = [child.content for token in tokens for child in token.children or []
+                  if child.type == "text" and child.content in {"[1]", "[2]"}]
+    assert references == ["[1]", "[2]"]
+    lists = [token.attrs["start"] for token in tokens if token.type == "ordered_list_open"]
+    assert lists == [2, 1]
+
+
+async def test_tasks_footnotes_and_alerts_reader_and_editor(tmp_path):
+    source = ('- [x] Done\n- [ ] Pending\n\nA note[^details].\n\n'
+              '[^details]: The detail.\n\n> [!NOTE]\n> Useful information.\n')
+    path = tmp_path / "features.md"
+    path.write_text(source)
+    app = Viewer(path)
+    async with app.run_test(size=(90, 35)) as pilot:
+        await settle(app, pilot)
+        reader = app.query_one(MarkdownViewer).document
+        from textual.widgets._markdown import MarkdownBullet
+        assert [bullet.symbol for bullet in reader.query(MarkdownBullet)][:2] == ["☑ ", "☐ "]
+        assert reader.query_one(MarkdownAlert).has_class("mdv-alert-note")
+        assert any("The detail." in paragraph._content.plain for paragraph in reader.query(MarkdownParagraph))
+        await pilot.press("e")
+        await settle(app, pilot)
+        editor = app.query_one(MarkdownEditor)
+        assert editor.text == source
+        assert source.index("The detail.") in editor.projection.positions
+        assert source.index("Useful information") in editor.projection.positions
+        await pilot.press("ctrl+l")
+        await settle(app, pilot)
+        assert editor.text == source
+        preview = app.query_one(AlignedPreview).projection
+        shown = "\n".join(row.text for row in preview.rows)
+        assert "☑ Done" in shown and "☐ Pending" in shown
 
 
 async def test_details_summary_expands_markdown_body(tmp_path):

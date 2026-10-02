@@ -8,10 +8,14 @@ import re
 
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
+from mdit_py_plugins.footnote import footnote_plugin
 from markdownify import markdownify
 from bs4 import BeautifulSoup
 from rich.markdown import Markdown as RichMarkdown
+from rich.markdown import ListItem as RichListItem
+from rich.segment import Segment
 from textual.await_complete import AwaitComplete
+from textual.widgets._markdown import MarkdownBlockQuote, MarkdownUnorderedListItem
 
 
 class InlineHTML(HTMLParser):
@@ -109,6 +113,7 @@ def copy_inline_tokens(tokens):
 class HTMLMarkdownParser(MarkdownIt):
     def __init__(self, *, editing=False, details=False):
         super().__init__("gfm-like")
+        self.use(footnote_plugin, inline=False, move_to_end=False)
         self.editing = editing
         self.details = details
         if editing:
@@ -139,6 +144,7 @@ class HTMLMarkdownParser(MarkdownIt):
             token.children = children
 
     def parse(self, src, env=None):
+        env = {} if env is None else env
         tokens = super().parse(src, env)
         if self.editing:
             lines = src.splitlines()
@@ -154,10 +160,64 @@ class HTMLMarkdownParser(MarkdownIt):
                         tokens[index + 1].map = token.map.copy()
                         closing = tokens[index + 2]
                         closing.type, closing.tag, closing.markup = "paragraph_close", "p", ""
+        expanded = []
+        skip_definition = False
+        for token in tokens:
+            if token.type == "footnote_reference_open":
+                number = env["footnotes"]["refs"].get(":" + token.meta["label"], -1) + 1
+                skip_definition = number < 1
+                if skip_definition:
+                    continue
+                opening = Token("ordered_list_open", "ol", 1,
+                                attrs={"start": number}, map=token.map)
+                item = Token("list_item_open", "li", 1, info=str(number), map=token.map)
+                expanded.extend([opening, item])
+            elif token.type == "footnote_reference_close":
+                if not skip_definition:
+                    expanded.extend([Token("list_item_close", "li", -1),
+                                     Token("ordered_list_close", "ol", -1)])
+                skip_definition = False
+            elif not skip_definition:
+                expanded.append(token)
+        tokens = expanded
         result = []
+        list_items = []
+        quotes = []
         for token in tokens:
             if token.type == "inline":
                 token.children = html_children(token.children)
+                if list_items and list_items[-1] is not None and token.children:
+                    first = token.children[0]
+                    match = re.match(r"^\[([ xX])\][ \t]+", first.content) if first.type == "text" else None
+                    if match:
+                        list_items[-1].meta["task"] = match[1].lower() == "x"
+                        first.content = first.content[match.end():]
+                    list_items[-1] = None
+                if quotes and quotes[-1] is not None and token.children:
+                    first = token.children[0]
+                    match = re.fullmatch(r"\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]", first.content) if first.type == "text" else None
+                    if match:
+                        kind = match[1]
+                        quotes[-1].meta["alert"] = kind.lower()
+                        label = Token("text", "", 0, content=kind.title() + ":")
+                        token.children[:1] = [Token("strong_open", "strong", 1), label,
+                                              Token("strong_close", "strong", -1)]
+                    quotes[-1] = None
+                children = []
+                for child in token.children or []:
+                    if child.type == "footnote_ref":
+                        children.append(Token("text", "", 0, content=f"[{child.meta['id'] + 1}]"))
+                    else:
+                        children.append(child)
+                token.children = children
+            if token.type == "list_item_open":
+                list_items.append(token)
+            elif token.type == "list_item_close":
+                list_items.pop()
+            elif token.type == "blockquote_open":
+                quotes.append(token)
+            elif token.type == "blockquote_close":
+                quotes.pop()
             if token.type != "html_block":
                 result.append(token)
                 continue
@@ -209,7 +269,29 @@ class HTMLMarkdownParser(MarkdownIt):
 
 
 
+class PrintListItem(RichListItem):
+    @classmethod
+    def create(cls, markdown, token):
+        item = cls()
+        item.task = token.meta.get("task")
+        return item
+
+    def render_bullet(self, console, options):
+        if self.task is None:
+            yield from super().render_bullet(console, options)
+            return
+        render_options = options.update(width=options.max_width - 3)
+        lines = console.render_lines(self.elements, render_options, style=self.style)
+        style = console.get_style("markdown.item.bullet", default="none")
+        for index, line in enumerate(lines):
+            yield Segment((" ☑ " if self.task else " ☐ ") if index == 0 else "   ", style)
+            yield from line
+            yield Segment("\n")
+
+
 class PrintMarkdown(RichMarkdown):
+    elements = {**RichMarkdown.elements, "list_item_open": PrintListItem}
+
     def __init__(self, markup, **kwargs):
         super().__init__(markup, **kwargs)
         self.parsed = HTMLMarkdownParser().parse(markup)
@@ -218,6 +300,27 @@ class PrintMarkdown(RichMarkdown):
 # The read view keeps details sections as real expandable terminal controls.
 from textual.widgets import Collapsible, Markdown
 from textual.widgets._markdown import MarkdownBlock
+
+
+class MarkdownTaskItem(MarkdownUnorderedListItem):
+    def __init__(self, markdown, token, bullet):
+        task = token.meta.get("task")
+        super().__init__(markdown, token, "☑ " if task else "☐ " if task is False else bullet)
+
+
+class MarkdownAlert(MarkdownBlockQuote):
+    DEFAULT_CSS = """
+    MarkdownAlert.mdv-alert-note { border-left: outer $primary; }
+    MarkdownAlert.mdv-alert-tip { border-left: outer $success; }
+    MarkdownAlert.mdv-alert-important { border-left: outer $primary; }
+    MarkdownAlert.mdv-alert-warning { border-left: outer $warning; }
+    MarkdownAlert.mdv-alert-caution { border-left: outer $error; }
+    """
+
+    def __init__(self, markdown, token):
+        super().__init__(markdown, token)
+        if kind := token.meta.get("alert"):
+            self.add_class(f"mdv-alert-{kind}")
 
 
 class MarkdownDetails(MarkdownBlock):
@@ -240,6 +343,13 @@ class HTMLMarkdown(Markdown):
             self._table_of_contents = None
             return AwaitComplete(asyncio.sleep(0))
         return super().update(markdown)
+
+    def get_block_class(self, token_type):
+        if token_type == "list_item_unordered_open":
+            return MarkdownTaskItem
+        if token_type == "blockquote_open":
+            return MarkdownAlert
+        return super().get_block_class(token_type)
 
     def _parse_markdown(self, tokens):
         tokens = list(tokens)

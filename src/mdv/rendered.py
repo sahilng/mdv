@@ -24,7 +24,7 @@ from markdown_it import MarkdownIt
 from markdown_it.token import Token
 
 from .preview import cached_source_columns
-from .html import HTMLMarkdownParser
+from .html import HTMLMarkdownParser, MarkdownTaskItem, MarkdownAlert
 
 
 SOURCE = "mdv_source"
@@ -98,6 +98,10 @@ class RenderMarkdown(Markdown):
     def get_block_class(self, token_type):
         if token_type in {"fence", "code_block"}:
             return CachedMarkdownFence
+        if token_type == "list_item_unordered_open":
+            return MarkdownTaskItem
+        if token_type == "blockquote_open":
+            return MarkdownAlert
         return super().get_block_class(token_type)
 
     def on_resize(self) -> None:
@@ -325,8 +329,12 @@ class RenderMarkdown(Markdown):
                         if len(parts) == len(raw_lines):
                             decorated = []
                             for source_line, part in zip(raw_lines, parts):
-                                prefix = re.match(r"^(\s*(?:>\s*)*)(?:(?:[-+*]|\d+[.)])\s+)?", source_line).group()
-                                prefix = re.sub(r"[-+*](?=\s)", "•", prefix).replace(">", "│")
+                                task = re.match(r"^(\s*(?:>\s*)*)[-+*][ \t]+\[([ xX])\][ \t]+", source_line)
+                                if task:
+                                    prefix = task[1].replace(">", "│") + ("☑ " if task[2].lower() == "x" else "☐ ")
+                                else:
+                                    prefix = re.match(r"^(\s*(?:>\s*)*)(?:(?:[-+*]|\d+[.)])\s+)?", source_line).group()
+                                    prefix = re.sub(r"[-+*](?=\s)", "•", prefix).replace(">", "│")
                                 decorated.append(Content(prefix) + part)
                             rendered = Content("\n").join(decorated)
                 content = located(rendered, raw, start, controls=self.controls, breaks=self.breaks)
