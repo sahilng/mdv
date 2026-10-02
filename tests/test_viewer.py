@@ -252,17 +252,31 @@ async def test_quit_directly_from_editor(tmp_path, monkeypatch, dirty):
         editor = app.query_one(TextArea)
         if dirty:
             editor.load_text("Changed")
-        await pilot.press("ctrl+p", "ctrl+q")
+        await pilot.press("ctrl+p", "ctrl+c")
         exit_app.assert_not_called()
-        await pilot.press("escape", "ctrl+q")
+        await pilot.press("escape", "ctrl+c")
         if dirty:
             exit_app.assert_not_called()
             assert editor.text == "Changed"
             assert path.read_text() == "Original"
-            await pilot.press("ctrl+s", "ctrl+q")
+            await pilot.press("ctrl+s", "ctrl+c")
             assert path.read_text() == "Changed"
         exit_app.assert_called_once_with()
         assert app.editing
+
+
+async def test_ctrl_c_replaces_q_in_read_mode(tmp_path, monkeypatch):
+    path = tmp_path / "read.md"
+    path.write_text("# Heading\n")
+    app = Viewer(path)
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        exit_app = Mock()
+        monkeypatch.setattr(app, "exit", exit_app)
+        await pilot.press("q")
+        exit_app.assert_not_called()
+        await pilot.press("ctrl+c")
+        exit_app.assert_called_once_with()
 
 
 async def test_edit_preview_save_and_discard(tmp_path):
@@ -537,7 +551,7 @@ async def test_interaction_and_reload(tmp_path):
         await pilot.press("r")
         await app.workers.wait_for_complete()
         assert "Unable to load" in str(app.query_one("#status", Static).render())
-        await pilot.press("q")
+        await pilot.press("ctrl+c")
 
 
 async def test_link_click_does_not_trigger_default_file_navigation(tmp_path, monkeypatch):

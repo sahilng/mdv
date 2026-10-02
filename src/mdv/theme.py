@@ -1,6 +1,7 @@
 """Share the viewer's selected Textual theme with Rich's print renderer."""
 
 import os
+from dataclasses import replace
 from pathlib import Path
 
 from rich.style import Style
@@ -31,13 +32,35 @@ def save_theme(name: str) -> None:
     path.write_text(name + "\n", encoding="utf-8")
 
 
+def register_visible_ansi_themes(app: App) -> None:
+    """Give ANSI themes explicit terminal colors so foreground and background differ."""
+    for name in ("ansi-dark", "ansi-light"):
+        theme = BUILTIN_THEMES[name]
+        app.register_theme(replace(
+            theme,
+            foreground=theme.variables["ansi-foreground"],
+            background=theme.variables["ansi-background"],
+            surface=theme.variables["ansi-background"],
+            panel=theme.variables["ansi-background"],
+            boost=theme.variables["ansi-background"],
+            variables={
+                **theme.variables,
+                "text-warning": theme.variables["ansi-background"],
+                "text-error": theme.variables["ansi-background"],
+            },
+            ansi=False,
+        ))
+
+
 class PrintPalette(SyntaxTheme):
     def __init__(self, name: str):
         app = App()
+        register_visible_ansi_themes(app)
         app.theme = name
         self.variables = app.get_css_variables()
         self.base = parse_style("$foreground on $surface", self.variables)
         self.dark = app.current_theme.dark
+        self.ansi = name in {"ansi-dark", "ansi-light"}
         self.syntax_styles = {
             token: self.style(value) for token, value in HighlightTheme.STYLES.items()
         }
@@ -59,7 +82,10 @@ class PrintPalette(SyntaxTheme):
         styles = {
             "markdown.text": self.style(""),
             "markdown.paragraph": self.style(""),
-            "markdown.code": self.style("$text-warning" if self.dark else "$text-error"),
+            "markdown.code": self.style(
+                ("$text-warning on $warning" if self.dark else "$text-error on $error")
+                if self.ansi else ("$text-warning" if self.dark else "$text-error")
+            ),
             "markdown.code_block": self.style(""),
             "markdown.block_quote": self.style(""),
             "markdown.list": self.style(""),

@@ -1,8 +1,10 @@
 import io
+import re
 
 import pytest
 from rich.console import Console
 from rich.markdown import Markdown
+from textual.command import CommandList, CommandPalette
 from textual.widgets import MarkdownViewer
 
 from mdv.app import Viewer
@@ -16,7 +18,8 @@ def isolated_settings(tmp_path, monkeypatch):
     monkeypatch.delenv("TEXTUAL_THEME", raising=False)
 
 
-@pytest.mark.parametrize("name", ["textual-dark", "textual-light", "dracula", "nord"])
+@pytest.mark.parametrize("name", ["textual-dark", "textual-light", "dracula", "nord",
+                                   "ansi-dark", "ansi-light"])
 async def test_selected_theme_persists_and_matches_print(tmp_path, name):
     path = tmp_path / "sample.md"
     path.write_text("## Heading\n\n```python\nprint(42)\n```\n")
@@ -61,3 +64,84 @@ def test_print_cli_uses_selected_theme(tmp_path, monkeypatch):
     assert main([str(path), "--print"]) == 0
     color = PrintPalette("nord").rich_theme().styles["markdown.h2"].color.triplet
     assert f"38;2;{color.red};{color.green};{color.blue}" in output.getvalue()
+
+
+async def test_theme_highlight_previews_and_escape_restores(tmp_path):
+    path = tmp_path / "sample.md"
+    path.write_text("# Heading\n")
+    app = Viewer(path)
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        original = app.theme
+        app.action_change_theme()
+        await pilot.pause(0.1)
+        assert isinstance(app.screen, CommandPalette)
+        commands = app.screen.query_one(CommandList)
+        assert commands.option_count > 1
+        await pilot.press("down")
+        await pilot.pause()
+        preview = app.theme
+        assert preview != original
+        await pilot.press("down")
+        await pilot.pause()
+        assert app.theme != preview
+        await pilot.press("escape")
+        assert app.theme == original
+
+        app.action_change_theme()
+        await pilot.pause(0.1)
+        await pilot.press("down")
+        await pilot.pause()
+        selected = app.theme
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.theme == selected
+    assert load_theme() == selected
+
+
+async def test_palette_does_not_dim_and_ansi_previews_keep_text_visible(tmp_path):
+    path = tmp_path / "sample.md"
+    path.write_text("# Heading\n\nBody paragraph\n")
+    app = Viewer(path)
+    async with app.run_test(size=(80, 20)) as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.press("ctrl+p")
+        assert isinstance(app.screen, CommandPalette)
+        assert app.screen.styles.background.is_transparent
+        await pilot.press("escape")
+
+        app.action_change_theme()
+        await pilot.pause(0.1)
+        assert app.screen.styles.background.is_transparent
+        commands = app.screen.query_one(CommandList)
+        text_colors = []
+        for index, name in enumerate(("ansi-dark", "ansi-light")):
+            commands.highlighted = index
+            await pilot.pause()
+            assert app.theme == name
+            screenshot = app.export_screenshot()
+            match = re.search(r'class="([^"]+)"[^>]*>Body&#160;paragraph</text>', screenshot)
+            assert match is not None
+            color = re.search(rf"\.{re.escape(match.group(1))} \{{ fill: (#[0-9a-f]{{6}})", screenshot)
+            assert color is not None
+            text_colors.append(color.group(1))
+        assert text_colors[0] != "#000000"
+        assert text_colors[0] != text_colors[1]
+
+
+@pytest.mark.parametrize("name", ["ansi-dark", "ansi-light"])
+async def test_ansi_inline_code_has_contrasting_text(tmp_path, name):
+    path = tmp_path / "sample.md"
+    path.write_text("A `visible code` example\n")
+    app = Viewer(path)
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        app.theme = name
+        await pilot.pause()
+        paragraph = app.query_one(MarkdownViewer).document.query_one("MarkdownParagraph")
+        style = paragraph.get_component_rich_style("code_inline")
+        assert style.color is not None
+        assert style.bgcolor is not None
+        assert style.color != style.bgcolor
+        print_style = PrintPalette(name).rich_theme().styles["markdown.code"]
+        assert print_style.color != print_style.bgcolor

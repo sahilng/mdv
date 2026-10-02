@@ -7,8 +7,10 @@ from urllib.parse import urlsplit
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.command import Command, CommandPalette
 from textual.containers import Horizontal
 from textual.geometry import Offset
+from textual.theme import ThemeProvider
 from textual.widgets import Footer, Header, Markdown, MarkdownViewer, Static, TextArea
 from textual.widgets._markdown import MarkdownBlock, MarkdownTableOfContents
 
@@ -18,7 +20,7 @@ from .live import RenderHost
 from .rendered import RenderMarkdown, aligned_snapshot, styled_source
 from .document import MARKDOWN_SUFFIXES, load_document
 from .preview import AlignedPreview
-from .theme import load_theme, save_theme
+from .theme import load_theme, register_visible_ansi_themes, save_theme
 
 
 class DocumentViewer(MarkdownViewer):
@@ -45,6 +47,21 @@ class DocumentViewer(MarkdownViewer):
             self.notify(message.href, title="Link", markup=False)
 
 
+class ViewerCommandPalette(CommandPalette):
+    DEFAULT_CSS = """
+    ViewerCommandPalette {
+        background: transparent;
+        align-horizontal: right;
+    }
+    ViewerCommandPalette > Vertical {
+        width: 32;
+        max-width: 50%;
+        height: auto;
+        margin-top: 1;
+    }
+    """
+
+
 class Viewer(App):
     TITLE = "mdv"
     CSS = """
@@ -65,14 +82,13 @@ class Viewer(App):
     #status { height: 1; padding: 0 1; background: $boost; color: $text-muted; }
     """
     BINDINGS = [
-        Binding("q", "quit", "Quit"),
+        Binding("ctrl+c", "quit", "Quit", priority=True),
         Binding("t", "toc", "Sidebar", show=False),
         Binding("ctrl+t", "toggle_toc", "Sidebar", priority=True),
         Binding("r", "reload", "Reload"),
         Binding("e", "edit", "Edit"),
         Binding("ctrl+l", "toggle_live_edit", "Live / split", priority=True),
         Binding("ctrl+s", "save", "Save", priority=True),
-        Binding("ctrl+q", "quit_editor", "Quit", priority=True),
         Binding("escape", "close_editor", "Read", priority=True),
         Binding("ctrl+d", "discard", "Discard edits", priority=True),
         Binding("j", "down", "Down", show=False),
@@ -83,8 +99,10 @@ class Viewer(App):
 
     def __init__(self, path: Path, *, show_toc: bool = False, start_editing: bool = False, live_edit: bool | None = None):
         super().__init__()
+        register_visible_ansi_themes(self)
         self.theme = load_theme()
         self.initial_theme = self.theme
+        self._theme_preview_original: str | None = None
         self.path = path
         self.show_toc = show_toc
         self.start_editing = start_editing or live_edit is True
@@ -260,6 +278,28 @@ class Viewer(App):
             except OSError as error:
                 print(f"mdv: unable to save theme: {error}", file=sys.stderr)
 
+    def action_change_theme(self) -> None:
+        self._theme_preview_original = self.theme
+        self.push_screen(ViewerCommandPalette(providers=[ThemeProvider], placeholder="Search for themes…",
+                                              id="theme-palette"))
+
+    def action_command_palette(self) -> None:
+        if self.use_command_palette and not CommandPalette.is_open(self):
+            self.push_screen(ViewerCommandPalette(id="--command-palette"))
+
+    def on_command_palette_option_highlighted(self, event: CommandPalette.OptionHighlighted) -> None:
+        if self._theme_preview_original is None:
+            return
+        option = event.highlighted_event.option
+        if isinstance(option, Command) and option.hit.text in self.available_themes:
+            self.theme = option.hit.text
+
+    def on_command_palette_closed(self, event: CommandPalette.Closed) -> None:
+        if self._theme_preview_original is not None:
+            if not event.option_selected:
+                self.theme = self._theme_preview_original
+            self._theme_preview_original = None
+
     @work(exclusive=True)
     async def action_reload(self) -> None:
         viewer = self.query_one(MarkdownViewer)
@@ -284,13 +324,15 @@ class Viewer(App):
             self.notify(str(error), title="Unable to load document", severity="error", timeout=10)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        if action in {"save", "close_editor", "discard", "quit_editor", "toggle_live_edit"}:
+        if action in {"save", "close_editor", "discard", "toggle_live_edit"}:
             # Priority bindings must not intercept keys on the command palette.
             return self.editing and self.screen is self.query_one("#editor", TextArea).screen
         if action == "toggle_toc":
             return (self.screen is self.query_one("#editor", TextArea).screen
                     and (not self.editing or self.live_edit))
-        if action in {"quit", "toc", "reload", "edit", "down", "up", "top", "bottom"}:
+        if action == "quit":
+            return self.screen is self.query_one("#editor", TextArea).screen
+        if action in {"toc", "reload", "edit", "down", "up", "top", "bottom"}:
             return not self.editing
         return True
 
@@ -335,7 +377,7 @@ class Viewer(App):
     def update_editor_status(self) -> None:
         marker = "Unsaved changes" if self.dirty else ("Saved" if self.path.exists() else "New file")
         status = (f"{self.path}  ·  {marker}  ·  Ctrl+L live/split · Ctrl+S save "
-                  "· Ctrl+Q quit · Esc read · Ctrl+D discard")
+                  "· Ctrl+C quit · Esc read · Ctrl+D discard")
         if status != self._editor_status:
             self._editor_status = status
             self.query_one("#status", Static).update(status)
@@ -384,9 +426,6 @@ class Viewer(App):
     async def action_discard(self) -> None:
         self.query_one("#editor", TextArea).load_text(self.content or "")
         await self.action_close_editor()
-
-    def action_quit_editor(self) -> None:
-        self.action_quit()
 
     def action_quit(self) -> None:
         if self.dirty:

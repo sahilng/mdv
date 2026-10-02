@@ -51,7 +51,7 @@ Interactive mode includes headings, tables, syntax-highlighted code, and a
 clickable table of contents sidebar, hidden by default. Use arrow keys, Page Up /
 Page Down, or `j` / `k` to scroll; `g` / `G` jump to the start / end. Press
 `Ctrl+T` to toggle the sidebar in reading and live editing (`t` also works while
-reading), `r` to reload, and `q` to quit. Conversion runs in the background so the UI
+reading), `r` to reload, and `Ctrl+C` to quit. Conversion runs in the background so the UI
 stays responsive. Click HTTP or HTTPS links to open them in your default browser.
 Heading links navigate within the document; other links display their destination.
 Embedded HTML headings, paragraphs, lists, tables, links, and common inline
@@ -63,7 +63,7 @@ Press `e` on a Markdown file to edit in the single-pane live editor. The
 contents sidebar stays available; select a heading to jump to its source. The
 live editor uses the same top and side margins as the read view.
 Use `Ctrl+L` to switch to the split source and preview view, `Ctrl+S` to save,
-`Ctrl+Q` to quit directly, and `Esc` to return to reading. The preview preserves read-mode text styles, code highlighting, and theme,
+`Ctrl+C` to quit directly, and `Esc` to return to reading. The preview preserves read-mode text styles, code highlighting, and theme,
 while aligning each row with the source, including wrapped lines and blank lines.
 Tables use source-aligned rows, and scrolling either pane keeps the rows together.
 
@@ -89,7 +89,8 @@ error before starting the viewer. After updating, rerun
 Piped input is treated as UTF-8 Markdown and rendered without a full-screen UI.
 Redirected output is plain Markdown, useful for saving converted documents.
 
-Choose a theme in the command palette (`Ctrl+P` → Change theme). The selection
+Choose a theme in the command palette (`Ctrl+P` → Change theme). Highlighting a
+theme previews it immediately; `Enter` keeps it and `Esc` restores the previous theme. The selection
 is saved when you close the viewer and reused by both `mdv` and `mdv --print`,
 including piped input. Settings live in `~/.config/mdv/theme` (or under
 `XDG_CONFIG_HOME` if set). `TEXTUAL_THEME` overrides the saved selection.
