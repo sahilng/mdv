@@ -44,7 +44,7 @@ def test_print_cli_uses_terminal_colors_independent_of_viewer_theme(tmp_path, mo
             return True
 
     path = tmp_path / "sample.md"
-    path.write_text("## Heading\n\n[Example](https://example.com)\n")
+    path.write_text("## Heading\n\nRun `mdv` or visit [Example](https://example.com).\n")
     output = Terminal()
     monkeypatch.setattr("sys.stdout", output)
     monkeypatch.setenv("COLORTERM", "truecolor")
@@ -60,6 +60,7 @@ def test_print_cli_uses_terminal_colors_independent_of_viewer_theme(tmp_path, mo
     without_link_ids = lambda value: re.sub(r";id=\d+;", ";id=;", value)
     assert without_link_ids(output.getvalue()) == without_link_ids(first)
     assert "Example" in first and "\x1b[" in first
+    assert "\x1b[1;36mmdv\x1b[0m" in first
 
 
 def test_print_text_and_links_inherit_terminal_colors():
@@ -69,7 +70,9 @@ def test_print_text_and_links_inherit_terminal_colors():
         assert styles[key].color is None
         assert styles[key].bgcolor is None
     assert styles["markdown.link"].underline
-    assert styles["markdown.code"].reverse
+    assert styles["markdown.code"].color.name == "cyan"
+    assert styles["markdown.code"].bold
+    assert not styles["markdown.code"].reverse
 
 
 async def test_theme_highlight_previews_and_escape_restores(tmp_path):
@@ -149,5 +152,3 @@ async def test_ansi_inline_code_has_contrasting_text(tmp_path, name):
         assert style.color is not None
         assert style.bgcolor is not None
         assert style.color != style.bgcolor
-        print_style = PrintPalette().rich_theme().styles["markdown.code"]
-        assert print_style.reverse

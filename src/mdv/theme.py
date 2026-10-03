@@ -60,7 +60,7 @@ class PrintPalette(ANSISyntaxTheme):
         styles = {
             "markdown.text": Style(),
             "markdown.paragraph": Style(),
-            "markdown.code": Style(reverse=True),
+            "markdown.code": Style(color="cyan", bold=True),
             "markdown.code_block": Style(),
             "markdown.block_quote": Style(dim=True),
             "markdown.list": Style(),
