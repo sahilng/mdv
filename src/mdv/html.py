@@ -128,6 +128,15 @@ class HTMLMarkdownParser(MarkdownIt):
         for token in state.tokens:
             if token.type != "inline":
                 continue
+            if "[^" in token.content:
+                # Footnote references register their use in state.env during
+                # inline parsing. Reusing their tokens skips that side effect,
+                # changes the final environment, and invalidates every block
+                # in the edit renderer on the next keystroke.
+                children = []
+                state.md.inline.parse(token.content, state.md, state.env, children)
+                token.children = children
+                continue
             key = (token.content, environment)
             children = self._inline_cache.get(key)
             if children is None:

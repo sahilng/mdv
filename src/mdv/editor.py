@@ -3,12 +3,15 @@
 import re
 
 from rich.cells import cell_len
+from rich.segment import Segment
+from rich.style import Style
 from textual.geometry import Offset
 from textual.strip import Strip
 from rich.text import Text
 from textual.binding import Binding
 from textual.document._wrapped_document import WrappedDocument
 from textual.widgets import TextArea
+from textual.widgets._markdown import MarkdownFence
 
 from .rendered import aligned_snapshot
 
@@ -35,6 +38,7 @@ class MarkdownEditor(TextArea):
     def __init__(self, *args, **kwargs):
         self._styled_lines = []
         self._code_rows = set()
+        self._code_backgrounds = {}
         super().__init__(*args, **kwargs)
         # TextArea constructs the wrapped document itself. Change only its
         # height lookup, retaining the wrapping data it already built.
@@ -74,6 +78,12 @@ class MarkdownEditor(TextArea):
         self._code_rows = {row for token in renderer.source_tokens
                            if token.type in {"fence", "code_block"} and token.map
                            for row in range(*token.map)}
+        self._code_backgrounds = {
+            row: block.visual_style.rich_style.bgcolor
+            for block in renderer.query(MarkdownFence)
+            if block.source_range and block.visual_style.rich_style.bgcolor is not None
+            for row in range(*block.source_range)
+        }
         self._line_cache.clear()
         self.refresh()
 
@@ -122,6 +132,18 @@ class MarkdownEditor(TextArea):
         visual_row = y + self.scroll_offset.y
         if 0 <= visual_row < self.wrapped_document.height:
             row, _ = self.wrapped_document.offset_to_location(Offset(0, visual_row))
+            background = self._code_backgrounds.get(row) if self.live_render else None
+            if background is not None:
+                base_background = self.rich_style.bgcolor
+                fill = Style(bgcolor=background)
+                strip = Strip([
+                    Segment(segment.text,
+                            (segment.style or Style()) + fill if segment.style is None or
+                            segment.style.bgcolor in (None, base_background)
+                            else segment.style,
+                            segment.control)
+                    for segment in strip
+                ], strip.cell_length)
             padding = self.heading_padding(row)
             if padding:
                 width = self.scrollable_content_region.width
@@ -148,8 +170,16 @@ class MarkdownEditor(TextArea):
             delta = edit.text.count("\n") - (last - first)
             self._code_rows = {row if row < first else row + delta if row > last else first
                                for row in self._code_rows}
+            self._code_backgrounds = {
+                row if row < first else row + delta if row > last else first: color
+                for row, color in self._code_backgrounds.items()
+            }
             if first in self._code_rows:
                 self._code_rows.update(range(first, first + edit.text.count("\n") + 1))
+                color = self._code_backgrounds.get(first)
+                if color is not None:
+                    self._code_backgrounds.update({row: color for row in
+                                                   range(first, first + edit.text.count("\n") + 1)})
             start_row, start_column = edit.top
             end_row, end_column = edit.bottom
             if end_row < len(self._styled_lines):

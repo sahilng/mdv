@@ -2,8 +2,6 @@ import io
 import re
 
 import pytest
-from rich.console import Console
-from rich.markdown import Markdown
 from textual.command import CommandList, CommandPalette
 from textual.widgets import MarkdownViewer
 
@@ -20,7 +18,7 @@ def isolated_settings(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("name", ["textual-dark", "textual-light", "dracula", "nord",
                                    "ansi-dark", "ansi-light"])
-async def test_selected_theme_persists_and_matches_print(tmp_path, name):
+async def test_selected_theme_persists_for_interactive_viewer(tmp_path, name):
     path = tmp_path / "sample.md"
     path.write_text("## Heading\n\n```python\nprint(42)\n```\n")
     app = Viewer(path)
@@ -28,16 +26,8 @@ async def test_selected_theme_persists_and_matches_print(tmp_path, name):
         await app.workers.wait_for_complete()
         app.theme = name
         await pilot.pause()
-        heading_color = app.query_one(MarkdownViewer).document.query_one("MarkdownH2").styles.color
     assert load_theme() == name
     assert Viewer(path).theme == name
-    palette = PrintPalette(load_theme())
-    stream = io.StringIO()
-    console = Console(file=stream, force_terminal=True, color_system="truecolor", theme=palette.rich_theme())
-    assert console.get_style("markdown.h2").color == heading_color.rich_color
-    console.print(Markdown(path.read_text(), code_theme=palette))
-    assert "Heading" in stream.getvalue()
-    assert "\x1b[" in stream.getvalue()
 
 
 def test_invalid_settings_and_environment_override(monkeypatch):
@@ -48,13 +38,13 @@ def test_invalid_settings_and_environment_override(monkeypatch):
     assert load_theme() == "nord"
 
 
-def test_print_cli_uses_selected_theme(tmp_path, monkeypatch):
+def test_print_cli_uses_terminal_colors_independent_of_viewer_theme(tmp_path, monkeypatch):
     class Terminal(io.StringIO):
         def isatty(self):
             return True
 
     path = tmp_path / "sample.md"
-    path.write_text("## Heading\n")
+    path.write_text("## Heading\n\n[Example](https://example.com)\n")
     output = Terminal()
     monkeypatch.setattr("sys.stdout", output)
     monkeypatch.setenv("COLORTERM", "truecolor")
@@ -62,8 +52,24 @@ def test_print_cli_uses_selected_theme(tmp_path, monkeypatch):
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("TEXTUAL_THEME", "nord")
     assert main([str(path), "--print"]) == 0
-    color = PrintPalette("nord").rich_theme().styles["markdown.h2"].color.triplet
-    assert f"38;2;{color.red};{color.green};{color.blue}" in output.getvalue()
+    first = output.getvalue()
+    output.seek(0)
+    output.truncate()
+    monkeypatch.setenv("TEXTUAL_THEME", "tokyo-night")
+    assert main([str(path), "--print"]) == 0
+    without_link_ids = lambda value: re.sub(r";id=\d+;", ";id=;", value)
+    assert without_link_ids(output.getvalue()) == without_link_ids(first)
+    assert "Example" in first and "\x1b[" in first
+
+
+def test_print_text_and_links_inherit_terminal_colors():
+    styles = PrintPalette().rich_theme().styles
+    for key in ("markdown.text", "markdown.paragraph", "markdown.h1", "markdown.h2",
+                "markdown.link", "markdown.link_url"):
+        assert styles[key].color is None
+        assert styles[key].bgcolor is None
+    assert styles["markdown.link"].underline
+    assert styles["markdown.code"].reverse
 
 
 async def test_theme_highlight_previews_and_escape_restores(tmp_path):
@@ -143,5 +149,5 @@ async def test_ansi_inline_code_has_contrasting_text(tmp_path, name):
         assert style.color is not None
         assert style.bgcolor is not None
         assert style.color != style.bgcolor
-        print_style = PrintPalette(name).rich_theme().styles["markdown.code"]
-        assert print_style.color != print_style.bgcolor
+        print_style = PrintPalette().rich_theme().styles["markdown.code"]
+        assert print_style.reverse

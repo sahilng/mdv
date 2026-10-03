@@ -56,11 +56,11 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 from rich.console import Console
 
-                from .theme import PrintPalette, load_theme
+                from .theme import PrintPalette
 
                 from .html import PrintMarkdown
 
-                palette = PrintPalette(load_theme())
+                palette = PrintPalette()
                 Console(theme=palette.rich_theme()).print(PrintMarkdown(content, code_theme=palette))
         return 0
     except BrokenPipeError:

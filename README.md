@@ -91,9 +91,10 @@ Redirected output is plain Markdown, useful for saving converted documents.
 
 Choose a theme in the command palette (`Ctrl+P` → Change theme). Highlighting a
 theme previews it immediately; `Enter` keeps it and `Esc` restores the previous theme. The selection
-is saved when you close the viewer and reused by both `mdv` and `mdv --print`,
-including piped input. Settings live in `~/.config/mdv/theme` (or under
-`XDG_CONFIG_HOME` if set). `TEXTUAL_THEME` overrides the saved selection.
+is saved when you close the viewer and reused by the interactive `mdv` viewer.
+`md --print` uses your terminal's colors for readable output. Settings live in
+`~/.config/mdv/theme` (or under `XDG_CONFIG_HOME` if set). `TEXTUAL_THEME`
+overrides the saved selection in the interactive viewer.
 
 PDF, Word, PowerPoint, Excel, Outlook, HTML, and MarkItDown's base formats are
 included. Conversion quality depends on the source document; scanned PDF OCR

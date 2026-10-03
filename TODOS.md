@@ -10,6 +10,6 @@
 - [x] issue on newline in single-pane edit
 - [x] editing slow, especially in single-pane and for large documents
 - [x] HTML not rendered
-- [ ] md (at least with some themes) shows all blocks like they're highlighted
-- [ ] dual pane edit could just have one scroll bar in the center
+- [x] md (at least with some themes) shows all blocks like they're highlighted
+- [x] dual pane edit could just have one scroll bar in the center
 - [ ] single pane edit still pretty slow

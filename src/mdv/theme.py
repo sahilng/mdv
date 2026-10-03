@@ -5,11 +5,9 @@ from dataclasses import replace
 from pathlib import Path
 
 from rich.style import Style
-from rich.syntax import SyntaxTheme
+from rich.syntax import ANSISyntaxTheme, ANSI_DARK
 from rich.theme import Theme
 from textual.app import App
-from textual.highlight import HighlightTheme
-from textual.markup import parse_style
 from textual.theme import BUILTIN_THEMES
 
 
@@ -52,56 +50,32 @@ def register_visible_ansi_themes(app: App) -> None:
         ))
 
 
-class PrintPalette(SyntaxTheme):
-    def __init__(self, name: str):
-        app = App()
-        register_visible_ansi_themes(app)
-        app.theme = name
-        self.variables = app.get_css_variables()
-        self.base = parse_style("$foreground on $surface", self.variables)
-        self.dark = app.current_theme.dark
-        self.ansi = name in {"ansi-dark", "ansi-light"}
-        self.syntax_styles = {
-            token: self.style(value) for token, value in HighlightTheme.STYLES.items()
-        }
+class PrintPalette(ANSISyntaxTheme):
+    """Use terminal foreground and palette colors for non-interactive output."""
 
-    def style(self, value: str) -> Style:
-        return (self.base + parse_style(value, self.variables)).rich_style
-
-    def get_style_for_token(self, token_type) -> Style:
-        while token_type:
-            if token_type in self.syntax_styles:
-                return self.syntax_styles[token_type]
-            token_type = token_type.parent
-        return self.style("")
-
-    def get_background_style(self) -> Style:
-        return self.style("")
+    def __init__(self):
+        super().__init__(ANSI_DARK)
 
     def rich_theme(self) -> Theme:
         styles = {
-            "markdown.text": self.style(""),
-            "markdown.paragraph": self.style(""),
-            "markdown.code": self.style(
-                ("$text-warning on $warning" if self.dark else "$text-error on $error")
-                if self.ansi else ("$text-warning" if self.dark else "$text-error")
-            ),
-            "markdown.code_block": self.style(""),
-            "markdown.block_quote": self.style(""),
-            "markdown.list": self.style(""),
-            "markdown.item.number": self.style(""),
-            "markdown.link": self.style("$link-color underline"),
-            "markdown.link_url": self.style("$link-color underline"),
-            "markdown.hr": self.style("$secondary"),
-            "markdown.h1.border": self.style("$primary"),
-            "markdown.table.border": self.style("$foreground 20%"),
-            "markdown.table.header": self.style("$primary bold"),
+            "markdown.text": Style(),
+            "markdown.paragraph": Style(),
+            "markdown.code": Style(reverse=True),
+            "markdown.code_block": Style(),
+            "markdown.block_quote": Style(dim=True),
+            "markdown.list": Style(),
+            "markdown.item.number": Style(bold=True),
+            "markdown.link": Style(bold=True, underline=True),
+            "markdown.link_url": Style(underline=True),
+            "markdown.hr": Style(dim=True),
+            "markdown.h1.border": Style(dim=True),
+            "markdown.table.border": Style(dim=True),
+            "markdown.table.header": Style(bold=True),
+            "markdown.h1": Style(bold=True, underline=True),
+            "markdown.h2": Style(bold=True),
+            "markdown.h3": Style(bold=True),
+            "markdown.h4": Style(italic=True),
+            "markdown.h5": Style(italic=True),
+            "markdown.h6": Style(dim=True),
         }
-        for level in range(1, 7):
-            prefix = f"markdown-h{level}"
-            emphasis = self.variables[f"{prefix}-text-style"]
-            styles[f"markdown.h{level}"] = self.style(
-                f"${prefix}-color on ${prefix}-background "
-                + ("" if emphasis == "none" else emphasis)
-            )
         return Theme(styles)

@@ -88,6 +88,22 @@ async def test_live_new_file_discard(tmp_path):
         assert not path.exists()
 
 
+async def test_split_view_draws_one_center_scrollbar(tmp_path):
+    path = tmp_path / "long.md"
+    path.write_text(("A paragraph\n\n" * 100))
+    app = Viewer(path, start_editing=True, live_edit=False)
+    async with app.run_test(size=(80, 20)) as pilot:
+        await settle(app, pilot)
+        editor = app.query_one(MarkdownEditor)
+        preview = app.query_one(AlignedPreview)
+        assert editor.show_vertical_scrollbar
+        assert editor.styles.scrollbar_size_vertical > 0
+        assert preview.styles.scrollbar_size_vertical == 0
+        preview.scroll_to(y=10, animate=False, immediate=True)
+        await pilot.pause()
+        assert editor.scroll_y == preview.scroll_y
+
+
 @pytest.mark.parametrize("theme", ["textual-dark", "textual-light", "nord"])
 async def test_edit_rendering_uses_read_styles_and_theme(tmp_path, monkeypatch, theme):
     from textual.widgets._markdown import MarkdownH1, MarkdownParagraph, MarkdownFence
@@ -184,6 +200,24 @@ async def test_live_long_code_and_incomplete_markdown(tmp_path):
         await settle(app, pilot)
         editor.move_cursor(editor.document.end)
         assert editor.projection.index(editor.document.end) in editor.projection.positions
+
+
+async def test_live_fenced_code_has_continuous_background(tmp_path):
+    path = tmp_path / "fence.md"
+    path.write_text("Before\n\n```markdown\n# Heading\n\nPlain text\n```\n\nAfter\n")
+    app = Viewer(path, live_edit=True)
+    app.theme = "tokyo-night"
+    async with app.run_test(size=(80, 20)) as pilot:
+        await settle(app, pilot)
+        editor = app.query_one(MarkdownEditor)
+        code_background = editor._code_backgrounds[3]
+        assert code_background != editor.rich_style.bgcolor
+        for row in (2, 3, 4, 5, 6):
+            y = editor.wrapped_document.location_to_offset((row, 0)).y - int(editor.scroll_y)
+            segments = list(editor.render_line(y))
+            assert all(segment.style.bgcolor == code_background for segment in segments)
+        y = editor.wrapped_document.location_to_offset((8, 0)).y - int(editor.scroll_y)
+        assert list(editor.render_line(y))[-1].style.bgcolor == editor.rich_style.bgcolor
 
 
 @pytest.mark.parametrize("theme", ["textual-dark", "textual-light", "nord"])
@@ -436,6 +470,49 @@ async def test_live_refresh_skips_character_projection_and_reuses_visual_styles(
         assert editor._styled_lines[-3] is before
         assert block._mdv_visual_cache is cached
         assert editor.get_line(5).plain == editor.document.lines[5]
+
+
+async def test_large_live_document_restyles_after_typing_pause(tmp_path, monkeypatch):
+    import asyncio
+
+    path = tmp_path / "large-live.md"
+    path.write_text("# Heading\n\n" + "A **paragraph** with a [link](https://example.com).\n\n" * 350)
+    app = Viewer(path, live_edit=True)
+    async with app.run_test(size=(80, 20)) as pilot:
+        await settle(app, pilot)
+        editor = app.query_one(MarkdownEditor)
+        renderer = app.query_one(RenderMarkdown)
+        updates = []
+        original = renderer.update
+
+        async def record(source):
+            updates.append(source)
+            await original(source)
+
+        monkeypatch.setattr(renderer, "update", record)
+        for _ in range(12):
+            editor.insert("x", location=(2, 0))
+            await asyncio.sleep(0.05)
+        assert not updates  # The full render waits until typing pauses.
+        await settle(app, pilot)
+        assert updates[-1] == editor.text
+        assert editor._styled_lines[2].plain == editor.document.lines[2]
+
+
+async def test_footnote_cache_keeps_unchanged_blocks_mounted(tmp_path):
+    path = tmp_path / "footnote.md"
+    path.write_text("# Title\n\nText[^note]\n\n[^note]: Detail\n\nLast paragraph\n")
+    app = Viewer(path, live_edit=True)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        renderer = app.query_one(RenderMarkdown)
+        editor = app.query_one(MarkdownEditor)
+        last_block = renderer.children[-1]
+        environment = renderer._block_keys[-1][-1]
+        editor.insert("New ", location=(0, 0))
+        await settle(app, pilot)
+        assert renderer.children[-1] is last_block
+        assert renderer._block_keys[-1][-1] == environment
 
 
 async def test_split_preview_reuses_styles_and_draws_rows_on_demand(tmp_path):

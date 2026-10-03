@@ -91,6 +91,7 @@ class AlignedPreview(ScrollView, can_focus=True):
         color: $foreground;
         overflow: auto auto;
         scrollbar-gutter: stable;
+        scrollbar-size-vertical: 0;
     }
     """
 

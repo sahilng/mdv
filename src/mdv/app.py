@@ -384,9 +384,17 @@ class Viewer(App):
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         if self.editing:
-            # Coalesce bursts without postponing styling until typing stops.
-            if self._typing_timer is None:
-                self._typing_timer = self.set_timer(0.04, self._refresh_after_typing)
+            lines = self.query_one(MarkdownEditor).document.line_count
+            if lines < 300:
+                # Small documents can maintain continuous Markdown rendering.
+                if self._typing_timer is None:
+                    self._typing_timer = self.set_timer(0.12, self._refresh_after_typing)
+            else:
+                # Reparse a large document after a brief pause so a render
+                # cannot block the next key in an uninterrupted typing burst.
+                if self._typing_timer is not None:
+                    self._typing_timer.stop()
+                self._typing_timer = self.set_timer(0.12, self._refresh_after_typing)
             self.update_editor_status()
 
     def _refresh_after_typing(self) -> None:
