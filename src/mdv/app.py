@@ -1,4 +1,5 @@
 import asyncio
+import subprocess
 import sys
 import webbrowser
 from pathlib import Path
@@ -11,7 +12,7 @@ from textual.command import Command, CommandPalette
 from textual.containers import Horizontal
 from textual.geometry import Offset
 from textual.theme import ThemeProvider
-from textual.widgets import Footer, Header, Markdown, MarkdownViewer, Static, TextArea
+from textual.widgets import Footer, Header, Input, Markdown, MarkdownViewer, Static, TextArea
 from textual.widgets._markdown import MarkdownBlock, MarkdownTableOfContents
 
 from .html import HTMLMarkdown
@@ -83,6 +84,7 @@ class Viewer(App):
     """
     BINDINGS = [
         Binding("ctrl+c", "quit", "Quit", priority=True),
+        Binding("ctrl+shift+c,super+c", "copy_selection", "Copy", priority=True),
         Binding("t", "toc", "Sidebar", show=False),
         Binding("ctrl+t", "toggle_toc", "Sidebar", priority=True),
         Binding("r", "reload", "Reload"),
@@ -335,6 +337,26 @@ class Viewer(App):
         if action in {"toc", "reload", "edit", "down", "up", "top", "bottom"}:
             return not self.editing
         return True
+
+    def action_copy_selection(self) -> None:
+        text = self.screen.get_selected_text()
+        focused = self.focused
+        if not text and isinstance(focused, (Input, TextArea)):
+            text = focused.selected_text
+        if text:
+            self.copy_to_clipboard(text)
+
+    def copy_to_clipboard(self, text: str) -> None:
+        super().copy_to_clipboard(text)
+        # macOS Terminal doesn't support Textual's OSC 52 clipboard escape.
+        if sys.platform == "darwin":
+            try:
+                subprocess.run(
+                    ["/usr/bin/pbcopy"], input=text.encode("utf-8"),
+                    check=True, timeout=2, capture_output=True,
+                )
+            except (OSError, subprocess.SubprocessError):
+                self.notify("Unable to copy to the macOS clipboard.", severity="error")
 
     @property
     def dirty(self) -> bool:

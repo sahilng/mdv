@@ -5,8 +5,10 @@ from functools import lru_cache
 
 from markdown_it import MarkdownIt
 from markdown_it.rules_inline import image, link
+from rich.cells import cell_len
 from textual.geometry import Size
 from textual.message import Message
+from textual.selection import Selection
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
 
@@ -119,7 +121,21 @@ class AlignedPreview(ScrollView, can_focus=True):
         width = self.scrollable_content_region.width
         if row >= len(self.rows):
             return Strip.blank(width, self.rich_style)
-        return self.rows[row].crop(self.scroll_offset.x, self.scroll_offset.x + width).adjust_cell_length(width, self.rich_style)
+        strip = self.rows[row].apply_offsets(0, row)
+        selection = self.text_selection
+        span = selection.get_span(row) if selection is not None else None
+        if span is not None:
+            start, end = span
+            text = strip.text
+            first = cell_len(text[:start])
+            last = strip.cell_length if end == -1 else cell_len(text[:end])
+            style = self.screen.get_component_rich_style("screen--selection")
+            strip = Strip.join((strip.crop(0, first), strip.crop(first, last).apply_style(style),
+                                strip.crop(last)))
+        return strip.crop(self.scroll_offset.x, self.scroll_offset.x + width).adjust_cell_length(width, self.rich_style)
+
+    def get_selection(self, selection: Selection) -> tuple[str, str]:
+        return selection.extract("\n".join(row.text for row in self.rows)), "\n"
 
     def action_link(self, href: str) -> None:
         self.post_message(self.LinkClicked(href))

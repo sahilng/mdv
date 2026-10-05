@@ -307,8 +307,59 @@ class PrintMarkdown(RichMarkdown):
 
 
 # The read view keeps details sections as real expandable terminal controls.
-from textual.widgets import Collapsible, Markdown
-from textual.widgets._markdown import MarkdownBlock
+from textual.widgets import Button, Collapsible, Markdown
+from textual.widgets._markdown import MarkdownBlock, MarkdownFence
+
+
+class CopyableMarkdownFence(MarkdownFence):
+    DEFAULT_CSS = """
+    CopyableMarkdownFence {
+        background: #161c24;
+        color: #eef2f7;
+        border: none;
+        layers: code controls;
+    }
+    CopyableMarkdownFence:light {
+        background: #f0f3f6;
+        color: #1f2328;
+    }
+    CopyableMarkdownFence > Label {
+        padding: 1 6 1 2;
+        layer: code;
+    }
+    CopyableMarkdownFence Button.copy-code {
+        dock: right;
+        offset: 0 1;
+        layer: controls;
+        height: 1;
+        min-width: 4;
+        width: 4;
+        border: none;
+        padding: 0;
+        margin: 0 1 0 0;
+        background: transparent;
+        color: #c9d1d9;
+        text-style: bold;
+    }
+    CopyableMarkdownFence:light Button.copy-code {
+        color: #57606a;
+    }
+    CopyableMarkdownFence Button.copy-code:hover,
+    CopyableMarkdownFence Button.copy-code:focus {
+        background: transparent;
+        color: $foreground;
+        text-style: bold;
+    }
+    """
+
+    def compose(self):
+        yield Button("⧉", classes="copy-code", tooltip="Copy code", compact=True)
+        yield from super().compose()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        # The display trims trailing whitespace; copying preserves the code.
+        self.app.copy_to_clipboard(self._token.content)
 
 
 class MarkdownTaskItem(MarkdownUnorderedListItem):
@@ -354,6 +405,8 @@ class HTMLMarkdown(Markdown):
         return super().update(markdown)
 
     def get_block_class(self, token_type):
+        if token_type in {"fence", "code_block"}:
+            return CopyableMarkdownFence
         if token_type == "list_item_unordered_open":
             return MarkdownTaskItem
         if token_type == "blockquote_open":

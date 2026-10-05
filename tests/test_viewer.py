@@ -1,10 +1,14 @@
 import io
+import subprocess
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from rich.cells import cell_len
 from textual.command import CommandPalette
-from textual.widgets import Markdown, MarkdownViewer, Static, TextArea
+from textual.selection import SELECT_ALL
+from textual.widgets import Input, Markdown, MarkdownViewer, Static, TextArea
 from textual.widgets._markdown import MarkdownTableOfContents
+from textual.widgets._footer import FooterKey
 from textual.widgets import Tree
 
 from mdv.app import Viewer
@@ -25,6 +29,230 @@ async def settle_preview(app, pilot):
         if not app._refreshing_preview and not app._preview_running and not app._preview_scheduled:
             return
     raise AssertionError("Preview did not settle")
+
+
+@pytest.mark.parametrize("key", ["super+c", "ctrl+shift+c"])
+@pytest.mark.parametrize("mode", ["read", "live", "split"])
+async def test_copy_selected_text(tmp_path, monkeypatch, key, mode):
+    path = tmp_path / "copy.md"
+    path.write_text("Selected café\n\nOther text\n")
+    app = Viewer(path, start_editing=mode != "read",
+                 live_edit=None if mode == "read" else mode == "live")
+    native_copy = Mock()
+    monkeypatch.setattr("mdv.app.subprocess.run", native_copy)
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        if mode == "read":
+            paragraph = app.query_one(MarkdownViewer).document.query("MarkdownParagraph").first()
+            app.screen.selections = {paragraph: SELECT_ALL}
+        else:
+            editor = app.query_one(TextArea)
+            editor.move_cursor((0, 0))
+            editor.move_cursor((0, len("Selected café")), select=True)
+        exit_app = Mock()
+        monkeypatch.setattr(app, "exit", exit_app)
+        await pilot.press(key)
+        assert app.clipboard == "Selected café"
+        assert not app.dirty
+        exit_app.assert_not_called()
+        if native_copy.called:
+            assert native_copy.call_args.kwargs["input"] == "Selected café".encode("utf-8")
+
+
+async def test_copy_without_selection_preserves_clipboard(tmp_path, monkeypatch):
+    path = tmp_path / "copy.md"
+    path.write_text("Text\n")
+    app = Viewer(path, start_editing=True)
+    copy = Mock()
+    monkeypatch.setattr(app, "copy_to_clipboard", copy)
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.press("super+c", "ctrl+shift+c")
+        copy.assert_not_called()
+
+
+async def test_copy_in_command_palette(tmp_path, monkeypatch):
+    path = tmp_path / "copy.md"
+    path.write_text("Text\n")
+    app = Viewer(path)
+    monkeypatch.setattr("mdv.app.subprocess.run", Mock())
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.press("ctrl+p")
+        search = app.screen.query_one(Input)
+        search.value = "theme"
+        search.select_all()
+        await pilot.press("super+c")
+        assert app.clipboard == "theme"
+        assert search.value == "theme"
+        assert CommandPalette.is_open(app)
+
+
+@pytest.mark.parametrize("mode", ["read", "live", "split", "preview"])
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+@pytest.mark.parametrize("trigger", ["key", "footer"])
+async def test_mouse_selection_copy(tmp_path, monkeypatch, mode, platform, trigger):
+    path = tmp_path / "copy.md"
+    path.write_text("Selected café\n\nOther text\n")
+    app = Viewer(path, start_editing=mode != "read",
+                 live_edit=None if mode == "read" else mode == "live")
+    native_copy = Mock()
+    monkeypatch.setattr("mdv.app.subprocess.run", native_copy)
+    monkeypatch.setattr("mdv.app.sys.platform", platform)
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        if mode != "read":
+            await settle_preview(app, pilot)
+        else:
+            await pilot.pause()
+        if mode == "read":
+            target = app.query_one(MarkdownViewer).document.query("MarkdownParagraph").first()
+            start = (0, 0)
+        elif mode == "preview":
+            target = app.query_one(AlignedPreview)
+            start = (target.gutter.left, target.gutter.top)
+        else:
+            target = app.query_one(TextArea)
+            start = (target.gutter.left + target.gutter_width, target.gutter.top)
+        await pilot.mouse_down(target, offset=start)
+        await pilot.hover(target, offset=(start[0] + 8, start[1]))
+        assert app.clipboard == ""
+        await pilot.mouse_up(target, offset=(start[0] + 8, start[1]))
+        await pilot.pause()
+        assert app.clipboard == ""
+        native_copy.assert_not_called()
+        if trigger == "key":
+            await pilot.press("ctrl+shift+c")
+        else:
+            copy = next(key for key in app.query(FooterKey) if key.description == "Copy")
+            assert await pilot.click(copy)
+        expected = "Selected " if mode in {"read", "preview"} else "Selected"
+        assert app.clipboard == expected
+        if platform == "darwin":
+            assert native_copy.call_args.kwargs["input"] == expected.encode()
+        else:
+            native_copy.assert_not_called()
+        assert not app.dirty
+        native_copy.reset_mock()
+        await pilot.click(target, offset=start)
+        native_copy.assert_not_called()
+
+
+async def test_macos_keyboard_selection_does_not_copy_automatically(tmp_path, monkeypatch):
+    path = tmp_path / "copy.md"
+    path.write_text("Selected café\n")
+    app = Viewer(path, start_editing=True)
+    native_copy = Mock()
+    monkeypatch.setattr("mdv.app.subprocess.run", native_copy)
+    monkeypatch.setattr("mdv.app.sys.platform", "darwin")
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.press("shift+right", "shift+right")
+        assert app.clipboard == ""
+        native_copy.assert_not_called()
+        await pilot.press("ctrl+shift+c")
+        assert app.clipboard == "Se"
+        assert native_copy.call_args.kwargs["input"] == b"Se"
+
+
+@pytest.mark.parametrize("source,code", [
+    ("```python\nprint('café')  \n\n```\n", "print('café')  \n\n"),
+    ("    print('indented')\n", "print('indented')\n"),
+    ("```\n```\n", ""),
+])
+async def test_code_block_copy_button(tmp_path, monkeypatch, source, code):
+    path = tmp_path / "code.md"
+    path.write_text(source)
+    app = Viewer(path)
+    native_copy = Mock()
+    monkeypatch.setattr("mdv.app.subprocess.run", native_copy)
+    monkeypatch.setattr("mdv.app.sys.platform", "darwin")
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        button = app.query_one(".copy-code")
+        block = button.parent
+        assert button.region.right == block.content_region.right - 1
+        native_copy.assert_not_called()
+        assert await pilot.click(button)
+        assert app.clipboard == code
+        assert native_copy.call_args.kwargs["input"] == code.encode("utf-8")
+        assert path.read_text() == source
+
+
+async def test_code_buttons_copy_their_own_block_after_reload(tmp_path, monkeypatch):
+    path = tmp_path / "code.md"
+    path.write_text("```\nfirst\n```\n\n```\nsecond\n```\n")
+    app = Viewer(path)
+    monkeypatch.setattr("mdv.app.subprocess.run", Mock())
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        buttons = list(app.query(".copy-code"))
+        assert len(buttons) == 2
+        await pilot.click(buttons[1])
+        assert app.clipboard == "second\n"
+        path.write_text("```\nupdated\n```\n")
+        await pilot.press("r")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert len(app.query(".copy-code")) == 1
+        await pilot.click(".copy-code")
+        assert app.clipboard == "updated\n"
+
+
+@pytest.mark.parametrize("theme", ["textual-dark", "textual-light", "atom-one-dark"])
+async def test_code_copy_icon_stays_inside_block_on_hover_and_resize(tmp_path, monkeypatch, theme):
+    path = tmp_path / "code.md"
+    code = "echo first\n" + "long_code_" * 20 + "\n"
+    path.write_text(f"```sh\n{code}```\n")
+    monkeypatch.setenv("TEXTUAL_THEME", theme)
+    app = Viewer(path)
+    async with app.run_test(size=(100, 20)) as pilot:
+        await app.workers.wait_for_complete()
+        for width in (100, 50, 120, 30, 80):
+            await pilot.resize_terminal(width, 20)
+            await pilot.pause()
+            button = app.query_one(".copy-code")
+            block = button.parent
+            await pilot.hover(button)
+            await pilot.pause()
+            assert button.region.right == block.content_region.right - 1
+            assert button.region.y == block.content_region.y + 1
+            assert button.content_region.height == 1
+            assert block.region.contains_region(button.region)
+            rows = app.screen._compositor.render_strips()
+            # Button's default line padding can paint past its allocated width
+            # even when its reported region is correctly inside the block.
+            assert all(cell_len(row.text) == width for row in rows)
+            assert "echo first" in rows[button.region.y].text
+            assert "⧉" in rows[button.region.y].text
+            block.scroll_to(x=15, animate=False, immediate=True)
+            await pilot.pause()
+            assert button.region.right == block.content_region.right - 1
+            assert "⧉" in app.screen._compositor.render_strips()[button.region.y].text
+            assert await pilot.click(button)
+            assert app.clipboard == code
+            assert all(cell_len(row.text) == width for row in app.screen._compositor.render_strips())
+            block.scroll_to(x=0, animate=False, immediate=True)
+
+
+@pytest.mark.parametrize("error", [None, OSError("unavailable"), subprocess.TimeoutExpired("pbcopy", 2)])
+def test_native_macos_clipboard(tmp_path, monkeypatch, error):
+    app = Viewer(tmp_path / "copy.md")
+    native_copy = Mock(side_effect=error)
+    notify = Mock()
+    monkeypatch.setattr("mdv.app.sys.platform", "darwin")
+    monkeypatch.setattr("mdv.app.subprocess.run", native_copy)
+    monkeypatch.setattr(app, "notify", notify)
+    app.copy_to_clipboard("café\nsecond line")
+    assert app.clipboard == "café\nsecond line"
+    native_copy.assert_called_once_with(
+        ["/usr/bin/pbcopy"], input="café\nsecond line".encode("utf-8"),
+        check=True, timeout=2, capture_output=True,
+    )
+    assert notify.called is (error is not None)
 
 
 @pytest.mark.parametrize("existing", [False, True])
