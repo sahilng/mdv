@@ -227,11 +227,11 @@ async def test_code_copy_icon_stays_inside_block_on_hover_and_resize(tmp_path, m
             # even when its reported region is correctly inside the block.
             assert all(cell_len(row.text) == width for row in rows)
             assert "echo first" in rows[button.region.y].text
-            assert "⧉" in rows[button.region.y].text
+            assert "⧉ Copy" in rows[button.region.y].text
             block.scroll_to(x=15, animate=False, immediate=True)
             await pilot.pause()
             assert button.region.right == block.content_region.right - 1
-            assert "⧉" in app.screen._compositor.render_strips()[button.region.y].text
+            assert "⧉ Copy" in app.screen._compositor.render_strips()[button.region.y].text
             assert await pilot.click(button)
             assert app.clipboard == code
             assert all(cell_len(row.text) == width for row in app.screen._compositor.render_strips())

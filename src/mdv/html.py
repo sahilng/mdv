@@ -324,7 +324,7 @@ class CopyableMarkdownFence(MarkdownFence):
         color: #1f2328;
     }
     CopyableMarkdownFence > Label {
-        padding: 1 6 1 2;
+        padding: 1 10 1 2;
         layer: code;
     }
     CopyableMarkdownFence Button.copy-code {
@@ -332,8 +332,8 @@ class CopyableMarkdownFence(MarkdownFence):
         offset: 0 1;
         layer: controls;
         height: 1;
-        min-width: 4;
-        width: 4;
+        min-width: 8;
+        width: 8;
         border: none;
         padding: 0;
         margin: 0 1 0 0;
@@ -353,7 +353,7 @@ class CopyableMarkdownFence(MarkdownFence):
     """
 
     def compose(self):
-        yield Button("⧉", classes="copy-code", tooltip="Copy code", compact=True)
+        yield Button("⧉ Copy", classes="copy-code", compact=True)
         yield from super().compose()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:

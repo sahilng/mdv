@@ -59,7 +59,7 @@ formatting render as terminal Markdown. HTML source stays intact while editing,
 with tags visible in gray in live mode. `<details>` sections have clickable
 summary controls in the read view. CSS and JavaScript are not executed.
 
-Click the overlapping-squares icon at the top right of a code block in the read view to copy its
+Click the copy icon at the top right of a code block in the read view to copy its
 code. To copy selected text in any mode, click **Copy** in the footer or press
 `Ctrl+Shift+C`. On macOS, copying uses the system clipboard. `Cmd+C` works in
 terminals that forward Command keys; the default Terminal.app handles it itself.
