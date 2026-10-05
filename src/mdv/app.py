@@ -21,10 +21,14 @@ from .live import RenderHost
 from .rendered import RenderMarkdown, aligned_snapshot, styled_source
 from .document import MARKDOWN_SUFFIXES, load_document
 from .preview import AlignedPreview
+from .scrollbar import SolidScrollBarRender
 from .theme import load_theme, register_visible_ansi_themes, save_theme
 
 
 class DocumentViewer(MarkdownViewer):
+    def on_mount(self) -> None:
+        self.vertical_scrollbar.renderer = SolidScrollBarRender
+
     def compose(self):
         markdown = HTMLMarkdown(open_links=False)
         markdown.can_focus = True

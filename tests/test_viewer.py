@@ -4,6 +4,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from rich.cells import cell_len
+from textual import events
+from textual._xterm_parser import XTermParser
 from textual.command import CommandPalette
 from textual.selection import SELECT_ALL
 from textual.widgets import Input, Markdown, MarkdownViewer, Static, TextArea
@@ -236,6 +238,132 @@ async def test_code_copy_icon_stays_inside_block_on_hover_and_resize(tmp_path, m
             assert app.clipboard == code
             assert all(cell_len(row.text) == width for row in app.screen._compositor.render_strips())
             block.scroll_to(x=0, animate=False, immediate=True)
+
+
+async def test_narrow_code_block_scrollbar_and_keyboard_navigation(tmp_path):
+    path = tmp_path / "wide-code.md"
+    code = "START_" + "middle_" * 20 + "END_TOKEN\n"
+    path.write_text(f"```sh\n{code}```\n\n```\nshort\n```\n\n" + "Normal prose wraps. " * 8)
+    app = Viewer(path)
+    async with app.run_test(size=(40, 24)) as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        long, short = app.query("CopyableMarkdownFence")
+        assert long.show_horizontal_scrollbar
+        assert long.horizontal_scrollbar.region.height == 1
+        assert not short.show_horizontal_scrollbar
+        # Keep source lines intact; the scrollbar adds one row to the panel.
+        assert long.query_one("#code-content").content_region.height == 1
+        prose = app.query_one(MarkdownViewer).document.query("MarkdownParagraph").first()
+        assert prose.content_region.height > 1
+        assert await pilot.click(long.query_one("#code-content"), offset=(2, 1))
+        assert long.has_focus
+        await pilot.press("right")
+        await pilot.pause(0.2)
+        assert long.scroll_x > 0
+        after_key = long.scroll_x
+        bar = long.horizontal_scrollbar
+        assert await pilot.mouse_down(bar, offset=(1, 0))
+        await pilot.hover(bar, offset=(bar.region.width - 1, 0))
+        await pilot.mouse_up(bar, offset=(bar.region.width - 1, 0))
+        await pilot.pause(0.2)
+        assert long.scroll_x > after_key
+        # The thumb uses solid cells, with no fractional glyphs at its ends.
+        bar_row = app.screen._compositor.render_strips()[bar.region.y]
+        assert not bar_row.crop(bar.region.x, bar.region.right).text.strip()
+        assert "END_TOKEN" in app.screen._compositor.render_strips()[long.region.y + 1].text
+        button = long.query_one(".copy-code")
+        assert button.region.right == long.content_region.right - 1
+        assert await pilot.click(button)
+        assert app.clipboard == code
+        await pilot.resize_terminal(220, 24)
+        await pilot.pause()
+        assert not long.show_horizontal_scrollbar
+        assert long.scroll_x == 0
+
+
+@pytest.mark.parametrize("shifted", [False, True])
+async def test_trackpad_horizontal_scroll_over_code(tmp_path, shifted):
+    path = tmp_path / "scroll.md"
+    path.write_text("```\n" + "wide_line_" * 25 + "\n```\n\n" + "Paragraph\n\n" * 25)
+    app = Viewer(path)
+    async with app.run_test(size=(40, 18)) as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        viewer = app.query_one(MarkdownViewer)
+        block = app.query_one("CopyableMarkdownFence")
+        label = block.query_one("#code-content")
+        x, y = label.content_region.offset
+        # SGR 66/67 are horizontal wheel reports; 68/69 are Shift+vertical.
+        parser = XTermParser()
+        event = parser.parse_mouse_code(f"\x1b[<{69 if shifted else 67};{x + 1};{y + 1}M")
+        assert isinstance(event, events.MouseScrollDown if shifted else events.MouseScrollRight)
+        app.post_message(event)
+        await pilot.pause(0.2)
+        assert block.scroll_x > 0
+        assert viewer.scroll_y == 0
+        event = parser.parse_mouse_code(f"\x1b[<{68 if shifted else 66};{x + 1};{y + 1}M")
+        app.post_message(event)
+        await pilot.pause(0.2)
+        assert block.scroll_x == 0
+        assert viewer.scroll_y == 0
+
+
+@pytest.mark.parametrize("editing", [False, True])
+async def test_vertical_scrollbar_edges_after_scroll_and_resize(tmp_path, editing):
+    path = tmp_path / "vertical.md"
+    path.write_text("\n\n".join(f"Paragraph {index}" for index in range(80)))
+    app = Viewer(path, start_editing=editing)
+    async with app.run_test(size=(50, 20)) as pilot:
+        await app.workers.wait_for_complete()
+        if editing:
+            await settle_preview(app, pilot)
+        else:
+            await pilot.pause()
+        target = app.query_one(MarkdownEditor if editing else MarkdownViewer)
+        for width, height, position in [
+            (50, 20, 0), (50, 20, 7), (20, 16, 13), (12, 12, 19),
+            (8, 10, 30), (70, 24, 13),
+        ]:
+            await pilot.resize_terminal(width, height)
+            target.scroll_to(y=position, animate=False, immediate=True)
+            await pilot.pause()
+            bar = target.vertical_scrollbar
+            assert target.show_vertical_scrollbar
+            await pilot.hover(bar, offset=(0, 0))
+            rows = app.screen._compositor.render_strips()
+            for row in rows[bar.region.y:bar.region.bottom]:
+                assert not row.crop(bar.region.x, bar.region.right).text.strip()
+                assert cell_len(row.text) == width
+
+
+@pytest.mark.parametrize("at_edge", [False, True])
+async def test_shift_scroll_momentum_keeps_horizontal_axis(tmp_path, at_edge):
+    path = tmp_path / "momentum.md"
+    path.write_text("```\n" + "wide_line_" * 25 + "\n```\n\n" + "Paragraph\n\n" * 30)
+    app = Viewer(path)
+    async with app.run_test(size=(40, 18)) as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        viewer = app.query_one(MarkdownViewer)
+        block = app.query_one("CopyableMarkdownFence")
+        if at_edge:
+            block.scroll_to(x=block.max_scroll_x, animate=False, immediate=True)
+        x, y = block.query_one("#code-content").content_region.offset
+        parser = XTermParser()
+        # Trackpad momentum may lose its Shift modifier when Shift is released.
+        app.post_message(parser.parse_mouse_code(f"\x1b[<69;{x + 1};{y + 1}M"))
+        await pilot.pause(0.03)
+        for _ in range(4):
+            app.post_message(parser.parse_mouse_code(f"\x1b[<65;{x + 1};{y + 1}M"))
+            await pilot.pause(0.03)
+        assert viewer.scroll_y == 0
+        assert block.scroll_x > 0
+        # After the gesture ends, normal vertical scrolling must work again.
+        await pilot.pause(0.35)
+        app.post_message(parser.parse_mouse_code(f"\x1b[<65;{x + 1};{y + 1}M"))
+        await pilot.pause(0.2)
+        assert viewer.scroll_y > 0
 
 
 @pytest.mark.parametrize("error", [None, OSError("unavailable"), subprocess.TimeoutExpired("pbcopy", 2)])

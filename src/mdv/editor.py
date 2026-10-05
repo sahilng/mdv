@@ -14,6 +14,7 @@ from textual.widgets import TextArea
 from textual.widgets._markdown import MarkdownFence
 
 from .rendered import aligned_snapshot
+from .scrollbar import SolidScrollBarRender
 
 
 class _EditorWrappedDocument(WrappedDocument):
@@ -34,6 +35,9 @@ class MarkdownEditor(TextArea):
     live_render = False
     _projection = None
     _style_renderer = None
+
+    def on_mount(self) -> None:
+        self.vertical_scrollbar.renderer = SolidScrollBarRender
 
     def __init__(self, *args, **kwargs):
         self._styled_lines = []

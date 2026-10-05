@@ -14,8 +14,12 @@ from bs4 import BeautifulSoup
 from rich.markdown import Markdown as RichMarkdown
 from rich.markdown import ListItem as RichListItem
 from rich.segment import Segment
+from textual import events
 from textual.await_complete import AwaitComplete
+from textual.binding import Binding
 from textual.widgets._markdown import MarkdownBlockQuote, MarkdownUnorderedListItem
+
+from .scrollbar import SolidScrollBarRender
 
 
 class InlineHTML(HTMLParser):
@@ -311,17 +315,37 @@ from textual.widgets import Button, Collapsible, Markdown
 from textual.widgets._markdown import MarkdownBlock, MarkdownFence
 
 
-class CopyableMarkdownFence(MarkdownFence):
+class CopyableMarkdownFence(MarkdownFence, can_focus=True):
+    _horizontal_scroll_active = False
+    _horizontal_scroll_timer = None
+    BINDINGS = [
+        Binding("left", "scroll_left", "Scroll code left", show=False),
+        Binding("right", "scroll_right", "Scroll code right", show=False),
+    ]
     DEFAULT_CSS = """
     CopyableMarkdownFence {
         background: #161c24;
         color: #eef2f7;
         border: none;
         layers: code controls;
+        overflow: auto hidden;
+        scrollbar-size-horizontal: 1;
+        scrollbar-background: #161c24;
+        scrollbar-background-hover: #161c24;
+        scrollbar-background-active: #161c24;
+        scrollbar-color: #536777;
+        scrollbar-color-hover: #70879f;
+        scrollbar-color-active: #8aa3bd;
     }
     CopyableMarkdownFence:light {
         background: #f0f3f6;
         color: #1f2328;
+        scrollbar-background: #f0f3f6;
+        scrollbar-background-hover: #f0f3f6;
+        scrollbar-background-active: #f0f3f6;
+        scrollbar-color: #afb8c1;
+        scrollbar-color-hover: #8c959f;
+        scrollbar-color-active: #6e7781;
     }
     CopyableMarkdownFence > Label {
         padding: 1 10 1 2;
@@ -355,6 +379,45 @@ class CopyableMarkdownFence(MarkdownFence):
     def compose(self):
         yield Button("⧉ Copy", classes="copy-code", compact=True)
         yield from super().compose()
+
+    def on_mount(self) -> None:
+        self.horizontal_scrollbar.renderer = SolidScrollBarRender
+
+    def _scroll_horizontal(self, event: events.MouseEvent, direction: int) -> None:
+        # Momentum can lose Shift after the user releases it. Keep one axis
+        # until the wheel stream pauses, and consume events at either edge.
+        self._horizontal_scroll_active = True
+        if self._horizontal_scroll_timer is not None:
+            self._horizontal_scroll_timer.stop()
+        self._horizontal_scroll_timer = self.set_timer(0.25, self._end_horizontal_scroll)
+        if direction > 0:
+            self._scroll_right_for_pointer(animate=False)
+        else:
+            self._scroll_left_for_pointer(animate=False)
+        event.prevent_default()
+        event.stop()
+
+    def _end_horizontal_scroll(self) -> None:
+        self._horizontal_scroll_active = False
+        self._horizontal_scroll_timer = None
+
+    def _on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        if event.shift or event.ctrl or self._horizontal_scroll_active:
+            self._scroll_horizontal(event, 1)
+        else:
+            super()._on_mouse_scroll_down(event)
+
+    def _on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        if event.shift or event.ctrl or self._horizontal_scroll_active:
+            self._scroll_horizontal(event, -1)
+        else:
+            super()._on_mouse_scroll_up(event)
+
+    def _on_mouse_scroll_right(self, event: events.MouseScrollRight) -> None:
+        self._scroll_horizontal(event, 1)
+
+    def _on_mouse_scroll_left(self, event: events.MouseScrollLeft) -> None:
+        self._scroll_horizontal(event, -1)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         event.stop()
@@ -393,6 +456,10 @@ class HTMLMarkdown(Markdown):
     def __init__(self, *args, **kwargs):
         kwargs["parser_factory"] = lambda: HTMLMarkdownParser(details=True)
         super().__init__(*args, **kwargs)
+
+    def on_resize(self) -> None:
+        # Leave text room even when the pane is narrower than its usual margins.
+        self.styles.padding = (1, min(3, max(0, (self.size.width - 1) // 2)))
 
     def update(self, markdown: str) -> AwaitComplete:
         # MarkdownViewer updates its initially empty document during mount.

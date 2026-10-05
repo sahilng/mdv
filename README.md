@@ -64,6 +64,11 @@ code. To copy selected text in any mode, click **Copy** in the footer or press
 `Ctrl+Shift+C`. On macOS, copying uses the system clipboard. `Cmd+C` works in
 terminals that forward Command keys; the default Terminal.app handles it itself.
 Selecting text alone never changes the clipboard.
+Long code lines keep their formatting and scroll horizontally. When a block
+is wider than the window, drag its bottom scrollbar, use a horizontal trackpad
+gesture in terminals that forward horizontal wheel events, or hold Shift while
+scrolling vertically over it. Click the code and use Left / Right to scroll
+with the keyboard. The Copy control stays at the top right.
 
 Press `e` on a Markdown file to edit in the single-pane live editor. The
 contents sidebar stays available; select a heading to jump to its source. The

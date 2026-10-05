@@ -75,6 +75,11 @@ def _located(plain, original_spans, source, start, controls, breaks) -> Content:
 
 
 class CachedMarkdownFence(MarkdownFence):
+    DEFAULT_CSS = """
+    CachedMarkdownFence { background: #161c24; color: #eef2f7; }
+    CachedMarkdownFence:light { background: #f0f3f6; color: #1f2328; }
+    """
+
     @classmethod
     @lru_cache(maxsize=128)
     def highlight(cls, code, language, ansi=False, dark=False):
