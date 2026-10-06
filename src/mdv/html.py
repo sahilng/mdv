@@ -349,7 +349,7 @@ class CopyableMarkdownFence(MarkdownFence, can_focus=True):
         scrollbar-color-active: #6e7781;
     }
     CopyableMarkdownFence > Label {
-        padding: 2 10 1 2;
+        padding: 2 4;
         layer: code;
     }
     CopyableMarkdownFence Button.copy-code {

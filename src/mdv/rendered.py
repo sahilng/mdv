@@ -78,6 +78,7 @@ class CachedMarkdownFence(MarkdownFence):
     DEFAULT_CSS = """
     CachedMarkdownFence { background: #161c24; color: #eef2f7; }
     CachedMarkdownFence:light { background: #f0f3f6; color: #1f2328; }
+    CachedMarkdownFence > Label { padding: 2 4; }
     """
 
     @classmethod

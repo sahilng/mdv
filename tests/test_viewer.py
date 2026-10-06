@@ -263,7 +263,7 @@ async def test_code_copy_icon_stays_inside_block_on_hover_and_resize(tmp_path, m
             # Button's default line padding can paint past its allocated width
             # even when its reported region is correctly inside the block.
             assert all(cell_len(row.text) == width for row in rows)
-            assert "echo first" in rows[button.region.y + 2].text
+            assert "echo first" in rows[block.query_one("#code-content").content_region.y].text
             assert str(button.label) in rows[button.region.y].text
             block.scroll_to(x=15, animate=False, immediate=True)
             await pilot.pause()
@@ -306,7 +306,7 @@ async def test_narrow_code_block_scrollbar_and_keyboard_navigation(tmp_path):
         # The thumb uses solid cells, with no fractional glyphs at its ends.
         bar_row = app.screen._compositor.render_strips()[bar.region.y]
         assert not bar_row.crop(bar.region.x, bar.region.right).text.strip()
-        assert "END_TOKEN" in app.screen._compositor.render_strips()[long.region.y + 2].text
+        assert "END_TOKEN" in app.screen._compositor.render_strips()[long.query_one("#code-content").content_region.y].text
         button = long.query_one(".copy-code")
         assert button.region.right == long.content_region.right
         assert await pilot.click(button)
