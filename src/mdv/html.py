@@ -316,6 +316,7 @@ from textual.widgets._markdown import MarkdownBlock, MarkdownFence
 
 
 class CopyableMarkdownFence(MarkdownFence, can_focus=True):
+    _copy_reset_timer = None
     _horizontal_scroll_active = False
     _horizontal_scroll_timer = None
     BINDINGS = [
@@ -348,30 +349,30 @@ class CopyableMarkdownFence(MarkdownFence, can_focus=True):
         scrollbar-color-active: #6e7781;
     }
     CopyableMarkdownFence > Label {
-        padding: 1 10 1 2;
+        padding: 2 10 1 2;
         layer: code;
     }
     CopyableMarkdownFence Button.copy-code {
         dock: right;
-        offset: 0 1;
+        offset: 0 0;
         layer: controls;
         height: 1;
         min-width: 8;
         width: 8;
         border: none;
         padding: 0;
-        margin: 0 1 0 0;
-        background: transparent;
-        color: #c9d1d9;
+        margin: 0;
+        background: #c9d1d9;
+        color: #161c24;
         text-style: bold;
     }
     CopyableMarkdownFence:light Button.copy-code {
-        color: #57606a;
+        background: #57606a;
+        color: #f0f3f6;
     }
     CopyableMarkdownFence Button.copy-code:hover,
     CopyableMarkdownFence Button.copy-code:focus {
-        background: transparent;
-        color: $foreground;
+        background: $foreground;
         text-style: bold;
     }
     """
@@ -384,12 +385,6 @@ class CopyableMarkdownFence(MarkdownFence, can_focus=True):
         self.horizontal_scrollbar.renderer = SolidScrollBarRender
 
     def _scroll_horizontal(self, event: events.MouseEvent, direction: int) -> None:
-        # Momentum can lose Shift after the user releases it. Keep one axis
-        # until the wheel stream pauses, and consume events at either edge.
-        self._horizontal_scroll_active = True
-        if self._horizontal_scroll_timer is not None:
-            self._horizontal_scroll_timer.stop()
-        self._horizontal_scroll_timer = self.set_timer(0.25, self._end_horizontal_scroll)
         if direction > 0:
             self._scroll_right_for_pointer(animate=False)
         else:
@@ -397,17 +392,30 @@ class CopyableMarkdownFence(MarkdownFence, can_focus=True):
         event.prevent_default()
         event.stop()
 
+    def _hold_horizontal_scroll(self) -> None:
+        # Allow brief momentum after Shift/Ctrl is released. Unmodified wheel
+        # events must not extend this grace period or vertical scrolling can
+        # keep the horizontal axis locked indefinitely.
+        self._horizontal_scroll_active = True
+        if self._horizontal_scroll_timer is not None:
+            self._horizontal_scroll_timer.stop()
+        self._horizontal_scroll_timer = self.set_timer(0.25, self._end_horizontal_scroll)
+
     def _end_horizontal_scroll(self) -> None:
         self._horizontal_scroll_active = False
         self._horizontal_scroll_timer = None
 
     def _on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        if event.shift or event.ctrl:
+            self._hold_horizontal_scroll()
         if event.shift or event.ctrl or self._horizontal_scroll_active:
             self._scroll_horizontal(event, 1)
         else:
             super()._on_mouse_scroll_down(event)
 
     def _on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        if event.shift or event.ctrl:
+            self._hold_horizontal_scroll()
         if event.shift or event.ctrl or self._horizontal_scroll_active:
             self._scroll_horizontal(event, -1)
         else:
@@ -422,7 +430,16 @@ class CopyableMarkdownFence(MarkdownFence, can_focus=True):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         event.stop()
         # The display trims trailing whitespace; copying preserves the code.
-        self.app.copy_to_clipboard(self._token.content)
+        if self.app.copy_to_clipboard(self._token.content) is False:
+            return
+        event.button.label = "✓ Copy"
+        if self._copy_reset_timer is not None:
+            self._copy_reset_timer.stop()
+        self._copy_reset_timer = self.set_timer(1.5, self._reset_copy_icon)
+
+    def _reset_copy_icon(self) -> None:
+        self.query_one(".copy-code", Button).label = "⧉ Copy"
+        self._copy_reset_timer = None
 
 
 class MarkdownTaskItem(MarkdownUnorderedListItem):

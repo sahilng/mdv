@@ -350,7 +350,7 @@ class Viewer(App):
         if text:
             self.copy_to_clipboard(text)
 
-    def copy_to_clipboard(self, text: str) -> None:
+    def copy_to_clipboard(self, text: str) -> bool:
         super().copy_to_clipboard(text)
         # macOS Terminal doesn't support Textual's OSC 52 clipboard escape.
         if sys.platform == "darwin":
@@ -361,6 +361,8 @@ class Viewer(App):
                 )
             except (OSError, subprocess.SubprocessError):
                 self.notify("Unable to copy to the macOS clipboard.", severity="error")
+                return False
+        return True
 
     @property
     def dirty(self) -> bool:

@@ -175,7 +175,8 @@ async def test_code_block_copy_button(tmp_path, monkeypatch, source, code):
         await pilot.pause()
         button = app.query_one(".copy-code")
         block = button.parent
-        assert button.region.right == block.content_region.right - 1
+        assert button.region.right == block.content_region.right
+        assert button.region.y == block.content_region.y
         native_copy.assert_not_called()
         assert await pilot.click(button)
         assert app.clipboard == code
@@ -204,6 +205,40 @@ async def test_code_buttons_copy_their_own_block_after_reload(tmp_path, monkeypa
         assert app.clipboard == "updated\n"
 
 
+async def test_code_copy_confirmation_resets_after_latest_click(tmp_path, monkeypatch):
+    path = tmp_path / "code.md"
+    path.write_text("```\nfirst\n```\n\n```\nsecond\n```\n")
+    app = Viewer(path)
+    monkeypatch.setattr("mdv.app.subprocess.run", Mock())
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        buttons = list(app.query(".copy-code"))
+        await pilot.pause()
+        await pilot.click(buttons[0])
+        assert str(buttons[0].label) == "✓ Copy"
+        assert str(buttons[1].label) == "⧉ Copy"
+        await pilot.pause(0.8)
+        await pilot.click(buttons[0])
+        await pilot.pause(0.8)
+        assert str(buttons[0].label) == "✓ Copy"
+        await pilot.pause(0.8)
+        assert str(buttons[0].label) == "⧉ Copy"
+
+
+async def test_code_copy_failure_keeps_original_icon(tmp_path, monkeypatch):
+    path = tmp_path / "code.md"
+    path.write_text("```\ncode\n```\n")
+    app = Viewer(path)
+    monkeypatch.setattr("mdv.app.sys.platform", "darwin")
+    monkeypatch.setattr("mdv.app.subprocess.run", Mock(side_effect=OSError("unavailable")))
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        button = app.query_one(".copy-code")
+        await pilot.pause()
+        await pilot.click(button)
+        assert str(button.label) == "⧉ Copy"
+
+
 @pytest.mark.parametrize("theme", ["textual-dark", "textual-light", "atom-one-dark"])
 async def test_code_copy_icon_stays_inside_block_on_hover_and_resize(tmp_path, monkeypatch, theme):
     path = tmp_path / "code.md"
@@ -220,20 +255,20 @@ async def test_code_copy_icon_stays_inside_block_on_hover_and_resize(tmp_path, m
             block = button.parent
             await pilot.hover(button)
             await pilot.pause()
-            assert button.region.right == block.content_region.right - 1
-            assert button.region.y == block.content_region.y + 1
+            assert button.region.right == block.content_region.right
+            assert button.region.y == block.content_region.y
             assert button.content_region.height == 1
             assert block.region.contains_region(button.region)
             rows = app.screen._compositor.render_strips()
             # Button's default line padding can paint past its allocated width
             # even when its reported region is correctly inside the block.
             assert all(cell_len(row.text) == width for row in rows)
-            assert "echo first" in rows[button.region.y].text
-            assert "⧉ Copy" in rows[button.region.y].text
+            assert "echo first" in rows[button.region.y + 2].text
+            assert str(button.label) in rows[button.region.y].text
             block.scroll_to(x=15, animate=False, immediate=True)
             await pilot.pause()
-            assert button.region.right == block.content_region.right - 1
-            assert "⧉ Copy" in app.screen._compositor.render_strips()[button.region.y].text
+            assert button.region.right == block.content_region.right
+            assert str(button.label) in app.screen._compositor.render_strips()[button.region.y].text
             assert await pilot.click(button)
             assert app.clipboard == code
             assert all(cell_len(row.text) == width for row in app.screen._compositor.render_strips())
@@ -271,9 +306,9 @@ async def test_narrow_code_block_scrollbar_and_keyboard_navigation(tmp_path):
         # The thumb uses solid cells, with no fractional glyphs at its ends.
         bar_row = app.screen._compositor.render_strips()[bar.region.y]
         assert not bar_row.crop(bar.region.x, bar.region.right).text.strip()
-        assert "END_TOKEN" in app.screen._compositor.render_strips()[long.region.y + 1].text
+        assert "END_TOKEN" in app.screen._compositor.render_strips()[long.region.y + 2].text
         button = long.query_one(".copy-code")
-        assert button.region.right == long.content_region.right - 1
+        assert button.region.right == long.content_region.right
         assert await pilot.click(button)
         assert app.clipboard == code
         await pilot.resize_terminal(220, 24)
@@ -366,6 +401,29 @@ async def test_shift_scroll_momentum_keeps_horizontal_axis(tmp_path, at_edge):
         assert viewer.scroll_y > 0
 
 
+@pytest.mark.parametrize("wheel_code", [69, 85, 67])
+async def test_unmodified_trackpad_scroll_cannot_extend_horizontal_lock(tmp_path, wheel_code):
+    path = tmp_path / "scroll.md"
+    path.write_text("```\n" + "wide_line_" * 25 + "\n```\n\n" + "Paragraph\n\n" * 30)
+    app = Viewer(path)
+    async with app.run_test(size=(40, 18)) as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        viewer = app.query_one(MarkdownViewer)
+        block = app.query_one("CopyableMarkdownFence")
+        x, y = block.query_one("#code-content").content_region.offset
+        parser = XTermParser()
+        app.post_message(parser.parse_mouse_code(f"\x1b[<{wheel_code};{x + 1};{y + 1}M"))
+        await pilot.pause(0.03)
+        assert block.scroll_x > 0
+        # No idle gap: ordinary wheel events must still let the lock expire.
+        for _ in range(12):
+            app.post_message(parser.parse_mouse_code(f"\x1b[<65;{x + 1};{y + 1}M"))
+            await pilot.pause(0.03)
+        assert not block._horizontal_scroll_active
+        assert viewer.scroll_y > 0
+
+
 @pytest.mark.parametrize("error", [None, OSError("unavailable"), subprocess.TimeoutExpired("pbcopy", 2)])
 def test_native_macos_clipboard(tmp_path, monkeypatch, error):
     app = Viewer(tmp_path / "copy.md")
@@ -374,7 +432,7 @@ def test_native_macos_clipboard(tmp_path, monkeypatch, error):
     monkeypatch.setattr("mdv.app.sys.platform", "darwin")
     monkeypatch.setattr("mdv.app.subprocess.run", native_copy)
     monkeypatch.setattr(app, "notify", notify)
-    app.copy_to_clipboard("café\nsecond line")
+    assert app.copy_to_clipboard("café\nsecond line") is (error is None)
     assert app.clipboard == "café\nsecond line"
     native_copy.assert_called_once_with(
         ["/usr/bin/pbcopy"], input="café\nsecond line".encode("utf-8"),
